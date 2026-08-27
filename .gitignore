@@ -12,5 +12,14 @@ build/
 *.tsbuildinfo
 next-env.d.ts
 
+# Neon CLI 가 만드는 링크 파일 (org/project/branch id). 사람마다 다를 수 있어 제외합니다.
+.neon
+
+# 에이전트 스킬은 skills-lock.json 으로 재설치되므로 실체 파일은 커밋하지 않습니다.
+#   재설치: npx skills add neondatabase/agent-skills -s neon -s neon-postgres -y
+# (.claude/skills 는 심볼릭 링크라 OS 간 이식성도 없습니다.)
+.agents/
+.claude/
+
 .DS_Store
 Thumbs.db
