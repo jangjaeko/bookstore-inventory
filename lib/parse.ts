@@ -62,6 +62,18 @@ export const BUILTIN_PRESETS: Record<string, Preset> = {
     // 캐나다가격 │ (빈칸) │ Title │ Publisher │ Author │ Copies │ KRW │ Weight
     mapping: ["cad", "", "title", "publisher", "author", "qty", "krw", "weight"],
   },
+  bpl: {
+    name: "BPL 인보이스 (납품)",
+    // ISBN │ Title(로마자) │ Title. Kor │ Other Title │ Unit Price │ 15% Discount │
+    // Net Price │ Author(로마자) │ Author. Kor │ Pub.City │ Pub.City. Kor │
+    // Publisher(로마자) │ Publisher. Kor │ Pub. Date │ Subject │ Copies │ Amount
+    //
+    // 로마자 열은 쓰지 않고 한글 열만 씁니다 (재고에 쌓인 YES24 서지정보와 맞추기 위해).
+    mapping: [
+      "isbn", "", "title", "", "cad", "", "", "",
+      "author", "", "", "", "publisher", "pubDate", "subject", "qty", "",
+    ],
+  },
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -123,15 +135,29 @@ export function splitRows(text: string, mode: Delimiter = "auto"): { rows: strin
         ? (l: string) => l.split(/ {2,}/)
         : (l: string) => l.split(",");
 
-  const rows = lines.map((l) => split(l).map((c) => c.trim()));
+  const rows = lines.map((l) => split(l).map(unquote));
   const width = Math.max(...rows.map((r) => r.length));
   for (const r of rows) while (r.length < width) r.push("");
   return { rows, delim };
 }
 
+/**
+ * 엑셀은 앞뒤 공백이나 특수문자가 든 셀을 큰따옴표로 감싸서 복사합니다.
+ * 예: BPL 인보이스의 ISBN 이 `"    9791174760548"` 로 들어옴.
+ * 따옴표를 벗기고 안쪽의 `""` 이스케이프도 풀어 줍니다.
+ */
+function unquote(cell: string): string {
+  const t = cell.trim();
+  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+    return t.slice(1, -1).replace(/""/g, '"').trim();
+  }
+  return t;
+}
+
 const HEADER_WORDS = [
   "total", "isbn", "title", "author", "publisher", "subject", "krw", "copies",
-  "amount", "unit price", "after dc", "dc", "pub.date", "pubdate", "series", "price",
+  "amount", "unit price", "net price", "after dc", "discount", "dc", "pub.date",
+  "pub. date", "pubdate", "series", "price", "other title", "pub.city", "pub. city",
   "도서명", "제목", "저자", "출판사", "정가", "수량", "무게", "분류", "출간", "위치",
 ];
 
@@ -142,6 +168,14 @@ export function isHeaderRow(row: string[]): boolean {
     return v.length > 0 && HEADER_WORDS.some((w) => v === w || v.startsWith(w));
   }).length;
   return hits >= 2;
+}
+
+/** 중앙값. 값이 없으면 0. */
+function median(nums: number[]): number {
+  if (!nums.length) return 0;
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -170,11 +204,21 @@ export function guessMapping(rows: string[][]): string[] {
       ym: ratio((v) => /^(19|20)\d{2}(0[1-9]|1[0-2])$/.test(v)),
       money: ratio((v) => /^\(?-?\$/.test(v)),
       numeric: ratio((v) => /^\(?-?[\d,]+(\.\d+)?\)?$/.test(v)),
-      avg: nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0,
+      /**
+       * 대푯값은 평균이 아니라 중앙값을 씁니다.
+       * 인보이스 맨 아래 합계 행("414" 같은 값)이 한 줄만 섞여도 평균은 크게 흔들려서
+       * 수량 열을 무게 열로 오인하게 됩니다. 중앙값은 그런 이상치에 끄떡없습니다.
+       */
+      median: median(nums),
       subject: ratio((v) => v.includes(">")),
-      author: ratio((v) => /(글|그림|역|저|지음|옮김|원저|감수)\s*$/.test(v) || v.includes("/")),
+      author: ratio((v) => /(글|그림|역|저|지음|옮김|원저|감수|편저|공편)\s*$/.test(v)),
       textish: ratio((v) => /[^\d,.$()\-\s]/.test(v)),
-      avgLen: vals.length ? vals.reduce((a, b) => a + b.length, 0) / vals.length : 0,
+      /** 한글이 들어 있는 비율. BPL 인보이스처럼 로마자·한글 열이 쌍으로 있을 때 한글 쪽을 고르는 데 씁니다. */
+      hangul: ratio((v) => /[가-힣]/.test(v)),
+      /** 글자 길이의 중앙값. 도서명(길다)과 출판사·도시(짧다)를 가르는 데 씁니다. */
+      medianLen: median(vals.map((v) => v.length)),
+      /** 서로 다른 값의 비율. 출판사(다양함)와 도시(몇 개 안 됨)를 가르는 데 씁니다. */
+      distinct: vals.length ? new Set(vals).size / vals.length : 0,
     };
   });
 
@@ -193,24 +237,36 @@ export function guessMapping(rows: string[][]): string[] {
     return best;
   };
 
+  /**
+   * 글자 열을 고를 때, 한글이 든 열이 하나라도 있으면 그중에서만 고릅니다.
+   * BPL 인보이스는 로마자/한글 열이 쌍으로 있는데 재고는 한글로 쌓여 있어서
+   * 항상 한글 쪽을 골라야 같은 책으로 이어집니다.
+   */
+  const pickText = (score: (s: (typeof stats)[number]) => number) => {
+    const isText = (s: (typeof stats)[number]) => !s.empty && !mapping[s.col] && s.textish > 0.6;
+    const hasHangul = stats.some((s) => isText(s) && s.hangul > 0.5);
+    return pickBest((s) => (isText(s) && (!hasHangul || s.hangul > 0.5) ? score(s) : 0), 0);
+  };
+
   // 특징이 뚜렷한 것부터 먼저 확정합니다.
   take(pickBest((s) => s.isbn, 0.5), "isbn");
   take(pickBest((s) => s.ym, 0.5), "pubDate");
   take(pickBest((s) => s.subject, 0.5), "subject");
-  take(pickBest((s) => s.author, 0.5), "author");
+  take(pickText((s) => s.author), "author");
 
-  // $ 열이 여러 개(Unit Price / DC / After DC / Amount)면 가장 왼쪽 = 판매가
+  // $ 열이 여러 개(Unit Price / DC / Net Price / Amount)면 가장 왼쪽 = 판매가
   const money = stats.find((s) => !s.empty && !mapping[s.col] && s.money > 0.5);
   if (money) take(money.col, "cad");
 
-  // 남은 글자 열 중 평균 길이가 가장 긴 것 = 도서명, 그다음 = 출판사
-  take(pickBest((s) => (s.textish > 0.6 ? s.avgLen : 0), 0), "title");
-  take(pickBest((s) => (s.textish > 0.6 ? 1 : 0), 0), "publisher");
+  // 도서명 = 남은 글자 열 중 가장 긴 것.
+  take(pickText((s) => s.medianLen), "title");
+  // 출판사 = 값이 가장 다양한 열. (도시 열은 "서울시"가 반복돼 다양성이 낮습니다.)
+  take(pickText((s) => s.distinct), "publisher");
 
   // 숫자 열: 값이 크면 정가(₩), 중간이면 무게(g), 작으면 수량
-  take(pickBest((s) => (s.numeric > 0.6 && s.avg >= 3000 ? s.avg : 0), 0), "krw");
-  take(pickBest((s) => (s.numeric > 0.6 && s.avg >= 20 && s.avg < 3000 ? 1 : 0), 0), "weight");
-  const qty = stats.find((s) => !s.empty && !mapping[s.col] && s.numeric > 0.6 && s.avg < 500);
+  take(pickBest((s) => (s.numeric > 0.6 && s.median >= 3000 ? s.median : 0), 0), "krw");
+  take(pickBest((s) => (s.numeric > 0.6 && s.median >= 20 && s.median < 3000 ? 1 : 0), 0), "weight");
+  const qty = stats.find((s) => !s.empty && !mapping[s.col] && s.numeric > 0.6 && s.median < 500);
   if (qty) take(qty.col, "qty");
 
   return mapping;
@@ -229,6 +285,11 @@ export function rowToItem(row: string[], mapping: string[]): ParsedRow {
       const n = toNumber(raw);
       if (n == null) return;
       out[field] = field === "cad" ? Math.abs(n) : Math.round(Math.abs(n));
+    } else if (field === "isbn") {
+      // 엑셀에서 온 ISBN 은 안쪽에 공백이 섞여 있기도 합니다("979 11 3068 1887").
+      // 정상 ISBN 이면 붙여서 저장하고, "판매용" 같은 값은 원문 그대로 둡니다.
+      const compact = raw.replace(/\s+/g, "");
+      out.isbn = /^[\dXx-]+$/.test(compact) && isValidIsbn(compact) ? compact : raw;
     } else {
       out[field] = raw;
     }
