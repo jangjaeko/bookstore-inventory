@@ -1,4 +1,5 @@
 import {
+  boolean,
   doublePrecision,
   index,
   integer,
@@ -82,6 +83,10 @@ export const importPresets = pgTable("import_presets", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   mapping: jsonb("mapping").$type<string[]>().notNull(),
+  /** "in" = 매입/입고, "out" = 납품/판매 */
+  direction: text("direction").notNull().default("in"),
+  /** 한 권이 두 줄에 걸쳐 있는 양식인지 (LBI 인보이스) */
+  multiRow: boolean("multi_row").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

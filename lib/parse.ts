@@ -44,7 +44,14 @@ const NUMERIC_FIELDS = new Set(["krw", "cad", "weight", "qty"]);
 // ─────────────────────────────────────────────────────────────
 // 기본 제공 양식
 // ─────────────────────────────────────────────────────────────
-export type Preset = { name: string; mapping: string[] | null };
+export type Preset = {
+  name: string;
+  mapping: string[] | null;
+  /** 이 문서가 매입(in)인지 납품·판매(out)인지. 양식을 고르면 방향이 따라옵니다. */
+  direction?: "in" | "out";
+  /** 한 권이 두 줄에 걸쳐 있는 양식인지 (LBI 인보이스) */
+  multiRow?: boolean;
+};
 
 export const BUILTIN_PRESETS: Record<string, Preset> = {
   auto: { name: "자동 감지", mapping: null },
@@ -73,6 +80,19 @@ export const BUILTIN_PRESETS: Record<string, Preset> = {
       "isbn", "", "title", "", "cad", "", "", "",
       "author", "", "", "", "publisher", "pubDate", "subject", "qty", "",
     ],
+    direction: "out",
+  },
+  lbi: {
+    name: "LBI 인보이스 (납품, 2줄)",
+    // NO │ ISBN │ Title │ Unit Price │ 15% Discount │ Net Price │ Copies │ Amount │ Author │ Pub. Date
+    //
+    // 한 권이 두 줄입니다.
+    //   윗줄: 번호 · ISBN · 로마자 제목 · 금액 · 권수 · 로마자 저자 · 출간
+    //   아랫줄: 한글 제목(Title 열) · 한글 저자(Author 열)
+    // 아랫줄 값이 윗줄을 덮어써서 결국 한글 제목·저자가 남습니다.
+    mapping: ["", "isbn", "title", "cad", "", "", "qty", "", "author", "pubDate"],
+    direction: "out",
+    multiRow: true,
   },
 };
 
@@ -300,24 +320,88 @@ export function rowToItem(row: string[], mapping: string[]): ParsedRow {
 // ─────────────────────────────────────────────────────────────
 // 반영 계획 (미리보기 + 서버 검증에 동일하게 사용)
 // ─────────────────────────────────────────────────────────────
-export type PlanStatus = "new" | "update" | "header" | "empty" | "noTitle";
+export type PlanStatus =
+  | "new" // 재고에 없던 책
+  | "update" // 재고에 이미 있는 책
+  | "merged" // 윗줄 도서에 합쳐진 이어지는 줄 (2줄 양식)
+  | "header" // 머리글
+  | "empty" // 도서명·ISBN 둘 다 없는 줄 (구역 제목, 합계, 예산 …)
+  | "noTitle"; // ISBN 은 있는데 도서명이 없는 줄
+
 export type PlanEntry = { idx: number; status: PlanStatus; item?: ParsedRow; matchKey?: string };
+
+export type PlanOptions = {
+  /**
+   * 한 권이 여러 줄에 걸쳐 있는 양식(LBI 인보이스).
+   * ISBN 이 있는 줄이 한 권의 시작이고, ISBN 없이 도서명만 있는 줄은 윗줄에 합칩니다.
+   * 합칠 때 아랫줄의 값이 이깁니다 — LBI 는 아랫줄에 한글 제목·저자가 오기 때문입니다.
+   */
+  multiRow?: boolean;
+};
 
 /**
  * @param existingKeys 이미 재고에 있는 matchKey 집합
  */
-export function buildPlan(rows: string[][], mapping: string[], existingKeys: Set<string>): PlanEntry[] {
-  return rows.map((row, idx) => {
-    if (isHeaderRow(row)) return { idx, status: "header" as const };
+export function buildPlan(
+  rows: string[][],
+  mapping: string[],
+  existingKeys: Set<string>,
+  options: PlanOptions = {},
+): PlanEntry[] {
+  const { multiRow = false } = options;
+  const entries: PlanEntry[] = rows.map((_, idx) => ({ idx, status: "empty" }));
+
+  // 현재 열려 있는(아직 아랫줄을 더 받을 수 있는) 도서
+  let openIdx = -1;
+  let openItem: ParsedRow | null = null;
+
+  /** 열려 있던 도서를 확정해 결과에 적습니다. */
+  const close = () => {
+    if (openIdx < 0 || !openItem) return;
+    if (!openItem.title) {
+      entries[openIdx] = { idx: openIdx, status: "noTitle", item: openItem };
+    } else {
+      const matchKey = makeMatchKey(openItem);
+      entries[openIdx] = {
+        idx: openIdx,
+        status: existingKeys.has(matchKey) ? "update" : "new",
+        item: openItem,
+        matchKey,
+      };
+    }
+    openIdx = -1;
+    openItem = null;
+  };
+
+  rows.forEach((row, idx) => {
+    if (isHeaderRow(row)) {
+      close();
+      entries[idx] = { idx, status: "header" };
+      return;
+    }
+
     const item = rowToItem(row, mapping);
-    if (!item.title && !item.isbn) return { idx, status: "empty" as const };
-    if (!item.title) return { idx, status: "noTitle" as const, item };
-    const matchKey = makeMatchKey(item);
-    return {
-      idx,
-      status: existingKeys.has(matchKey) ? ("update" as const) : ("new" as const),
-      item,
-      matchKey,
-    };
+
+    // 이어지는 줄인가? — ISBN 이 없고, 도서명이 있고, 위에 열린 도서가 있을 때만.
+    // (도서명을 요구하는 덕분에 예산·합계 줄이 앞 도서에 잘못 붙지 않습니다.)
+    if (multiRow && openItem && item.title && !isValidIsbn(item.isbn)) {
+      Object.assign(openItem, item); // 값이 있는 항목만 덮어씀 (rowToItem 이 빈 값은 뺍니다)
+      entries[idx] = { idx, status: "merged" };
+      return;
+    }
+
+    close();
+
+    if (!item.title && !item.isbn) {
+      entries[idx] = { idx, status: "empty" };
+      return;
+    }
+
+    openIdx = idx;
+    openItem = item;
+    if (!multiRow) close(); // 한 줄 = 한 권인 양식은 바로 확정
   });
+
+  close();
+  return entries;
 }

@@ -24,6 +24,7 @@ export async function POST(req: Request) {
     const direction: Direction = body.direction === "out" ? "out" : "in";
     const mode: InMode = ["add", "replace", "skip"].includes(body.mode) ? body.mode : "add";
     const updateMeta = body.updateMeta === true;
+    const multiRow = body.multiRow === true;
     // 이력에 남길 사유. 예: "BPL 납품 2026-08"
     const reason = (str(body.reason) || "").slice(0, 80);
 
@@ -32,9 +33,12 @@ export async function POST(req: Request) {
     if (rows.length > 5000) return fail("한 번에 5000행까지만 반영할 수 있습니다. 나눠서 붙여넣어 주세요.");
 
     // 1) 각 행을 도서 객체로. 머리글·빈 행·도서명 없는 행(구역 제목, 합계 등)을 걸러냅니다.
-    const plan = buildPlan(rows, mapping, new Set());
+    const plan = buildPlan(rows, mapping, new Set(), { multiRow });
     const usable = plan.filter((p) => p.status === "new" || p.status === "update");
-    const skippedRows = plan.length - usable.length;
+    // "merged" 는 윗줄에 합쳐진 줄이라 버려진 게 아닙니다. 제외 개수에서 빼 줍니다.
+    const skippedRows = plan.filter(
+      (p) => p.status === "header" || p.status === "empty" || p.status === "noTitle",
+    ).length;
     if (!usable.length) return fail("반영할 수 있는 행이 없습니다. 열 지정을 확인해 주세요.");
 
     // 2) 붙여넣은 안에서 같은 책이 여러 번 나오면 미리 합칩니다.

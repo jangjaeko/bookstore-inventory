@@ -25,7 +25,12 @@ export async function POST(req: Request) {
     }
     const [preset] = await db
       .insert(importPresets)
-      .values({ name, mapping: body.mapping })
+      .values({
+        name,
+        mapping: body.mapping,
+        direction: body.direction === "out" ? "out" : "in",
+        multiRow: body.multiRow === true,
+      })
       .returning();
     return NextResponse.json({ preset });
   } catch (err) {

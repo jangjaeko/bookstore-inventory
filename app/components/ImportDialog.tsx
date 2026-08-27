@@ -32,6 +32,7 @@ export default function ImportDialog({
   const [direction, setDirection] = useState<Direction>("in");
   const [mode, setMode] = useState<InMode>("add");
   const [updateMeta, setUpdateMeta] = useState(true);
+  const [multiRow, setMultiRow] = useState(false);
   const [reason, setReason] = useState("");
 
   const [mapping, setMapping] = useState<string[]>([]);
@@ -58,19 +59,37 @@ export default function ImportDialog({
 
   const presetOptions = useMemo(
     () => [
-      ...Object.entries(BUILTIN_PRESETS).map(([key, p]) => ({ key, name: p.name, mapping: p.mapping })),
-      ...savedPresets.map((p) => ({ key: `db:${p.id}`, name: p.name, mapping: p.mapping })),
+      ...Object.entries(BUILTIN_PRESETS).map(([key, p]) => ({
+        key,
+        name: p.name,
+        mapping: p.mapping,
+        direction: p.direction,
+        multiRow: p.multiRow === true,
+      })),
+      ...savedPresets.map((p) => ({
+        key: `db:${p.id}`,
+        name: p.name,
+        mapping: p.mapping,
+        direction: p.direction as "in" | "out" | undefined,
+        multiRow: p.multiRow === true,
+      })),
     ],
     [savedPresets],
   );
 
-  // BPL 인보이스는 납품(출고) 문서이므로 양식을 고르면 방향을 자동으로 맞춰 줍니다.
+  // 납품 인보이스 양식을 고르면 방향(출고)과 2줄 여부가 따라옵니다.
+  // 출고 문서는 로마자 제목·메모가 섞여 있어 서지정보 갱신도 꺼 둡니다.
   useEffect(() => {
-    if (presetKey === "bpl") {
-      setDirection("out");
-      setUpdateMeta(false);
+    const preset = presetOptions.find((p) => p.key === presetKey);
+    if (!preset?.mapping) return;
+    setMultiRow(preset.multiRow);
+    if (preset.direction) {
+      setDirection(preset.direction);
+      if (preset.direction === "out") setUpdateMeta(false);
     }
-  }, [presetKey]);
+    // 양식을 바꿀 때만 반응합니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetKey, savedPresets]);
 
   const { rows } = useMemo(() => splitRows(text, delim), [text, delim]);
   const width = rows.length ? Math.max(...rows.map((r) => r.length)) : 0;
@@ -92,8 +111,8 @@ export default function ImportDialog({
 
   // ── 도서가 아닌 행(머리글·구역 제목·합계)을 걸러낸 계획 ──
   const plan = useMemo(
-    () => (mapping.length ? buildPlan(rows, mapping, new Set()) : []),
-    [rows, mapping],
+    () => (mapping.length ? buildPlan(rows, mapping, new Set(), { multiRow }) : []),
+    [rows, mapping, multiRow],
   );
 
   const planKeys = useMemo(
@@ -139,7 +158,11 @@ export default function ImportDialog({
   // ── 미리보기 집계 ──
   const summary = useMemo(() => {
     const books = plan.filter((p) => p.status === "new" || p.status === "update");
-    const skipped = plan.length - books.length;
+    // "merged" 는 윗줄에 합쳐진 줄이라 버려진 게 아닙니다.
+    const skipped = plan.filter(
+      (p) => p.status === "header" || p.status === "empty" || p.status === "noTitle",
+    ).length;
+    const mergedRows = plan.filter((p) => p.status === "merged").length;
 
     // 같은 책이 여러 줄에 나오면 합쳐서 셉니다.
     const perBook = new Map<string, { title: string; qty: number }>();
@@ -160,6 +183,7 @@ export default function ImportDialog({
         existing: perBook.size - isNew,
         zeroQty: 0,
         skipped,
+        mergedRows,
         missing: [] as string[],
         shortfall: [] as { title: string; had: number; needed: number }[],
         duplicates: books.length - perBook.size,
@@ -190,6 +214,7 @@ export default function ImportDialog({
       existing: willChange,
       zeroQty,
       skipped,
+      mergedRows,
       missing,
       shortfall,
       duplicates: books.length - perBook.size,
@@ -214,7 +239,7 @@ export default function ImportDialog({
     const res = await fetch("/api/presets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim(), mapping }),
+      body: JSON.stringify({ name: name.trim(), mapping, direction, multiRow }),
     });
     if (!res.ok) return setError("양식 저장에 실패했습니다.");
     const data = await res.json();
@@ -239,7 +264,7 @@ export default function ImportDialog({
       const res = await fetch("/api/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rows, mapping, direction, mode, updateMeta, reason }),
+        body: JSON.stringify({ rows, mapping, direction, mode, updateMeta, multiRow, reason }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "반영에 실패했습니다.");
@@ -352,6 +377,14 @@ export default function ImportDialog({
           서지정보(저자·출판사 등)도 갱신
         </label>
 
+        <label
+          className="flex items-center gap-1.5 text-xs text-gray-500"
+          title="LBI 인보이스처럼 윗줄에 로마자 제목, 아랫줄에 한글 제목이 오는 양식"
+        >
+          <input type="checkbox" checked={multiRow} onChange={(e) => setMultiRow(e.target.checked)} />
+          두 줄이 한 권
+        </label>
+
         <label className="flex items-center gap-1.5 text-xs text-gray-500">
           사유
           <input
@@ -404,9 +437,21 @@ export default function ImportDialog({
               </thead>
               <tbody>
                 {rows.slice(0, 8).map((row, r) => {
-                  const skip = plan[r] && plan[r].status !== "new" && plan[r].status !== "update";
+                  const status = plan[r]?.status;
+                  const isMerged = status === "merged";
+                  const skip = status !== "new" && status !== "update" && !isMerged;
                   return (
-                    <tr key={r} className={skip ? "bg-gray-50 text-gray-300 line-through" : ""}>
+                    <tr
+                      key={r}
+                      title={isMerged ? "윗줄 도서에 합쳐집니다" : undefined}
+                      className={
+                        skip
+                          ? "bg-gray-50 text-gray-300 line-through"
+                          : isMerged
+                            ? "bg-accent-soft/60 text-gray-600"
+                            : ""
+                      }
+                    >
                       {mapping.map((_, i) => (
                         <td
                           key={i}
@@ -470,6 +515,11 @@ export default function ImportDialog({
             <span className="text-gray-500">
               도서 아닌 행 <b className="text-sm">{summary.skipped}</b>개 제외
             </span>
+            {summary.mergedRows > 0 && (
+              <span className="text-accent">
+                윗줄에 합친 줄 <b className="text-sm">{summary.mergedRows}</b>개
+              </span>
+            )}
             {summary.duplicates > 0 && (
               <span className="text-gray-500">
                 같은 책 합침 <b className="text-sm">{summary.duplicates}</b>행
