@@ -1,0 +1,16 @@
+node_modules/
+.next/
+out/
+build/
+
+# 환경변수 — DATABASE_URL, APP_PASSWORD 등 비밀값이 들어갑니다. 절대 커밋하지 마세요.
+.env
+.env.local
+.env*.local
+
+.vercel/
+*.tsbuildinfo
+next-env.d.ts
+
+.DS_Store
+Thumbs.db

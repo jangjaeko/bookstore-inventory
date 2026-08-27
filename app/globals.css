@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@theme {
+  --color-accent: #0064ff;
+  --color-accent-soft: #eaf1ff;
+  --font-sans: -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", "Segoe UI", sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: #f7f8fa;
+  color: #222;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 숫자 입력의 위/아래 화살표는 재고 표에서 방해만 됩니다. */
+input.no-spin::-webkit-outer-spin-button,
+input.no-spin::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input.no-spin {
+  -moz-appearance: textfield;
+}

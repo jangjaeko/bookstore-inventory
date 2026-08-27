@@ -1,0 +1,169 @@
+import { NextResponse } from "next/server";
+import { and, asc, desc, gt, ilike, inArray, lte, or, sql } from "drizzle-orm";
+import { db } from "@/lib/db";
+import { books, stockLogs } from "@/lib/schema";
+import { makeMatchKey, normIsbn } from "@/lib/parse";
+import { fail, handleError, num, str } from "@/lib/api";
+
+export const dynamic = "force-dynamic";
+
+// ─────────────── 목록 / 검색 ───────────────
+export async function GET(req: Request) {
+  try {
+    const url = new URL(req.url);
+    const q = (url.searchParams.get("q") ?? "").trim();
+    const filter = url.searchParams.get("filter") ?? "all";
+    const sort = url.searchParams.get("sort") ?? "updated";
+    const threshold = Number(url.searchParams.get("threshold") ?? 2) || 0;
+
+    const conditions = [];
+
+    if (q) {
+      const like = `%${q}%`;
+      const digits = normIsbn(q);
+      const parts = [
+        ilike(books.title, like),
+        ilike(books.author, like),
+        ilike(books.publisher, like),
+        ilike(books.subject, like),
+        ilike(books.memo, like),
+        ilike(books.location, like),
+      ];
+      // ISBN 은 하이픈이 섞여 있을 수 있으므로 숫자만 남겨 비교합니다.
+      if (digits.length >= 3) {
+        parts.push(sql`regexp_replace(${books.isbn}, '[^0-9Xx]', '', 'g') ILIKE ${"%" + digits + "%"}`);
+      }
+      conditions.push(or(...parts));
+    }
+
+    if (filter === "inStock") conditions.push(gt(books.qty, 0));
+    else if (filter === "low") conditions.push(lte(books.qty, threshold));
+    else if (filter === "zero") conditions.push(lte(books.qty, 0));
+
+    const orderBy =
+      sort === "title" ? [asc(books.title)]
+      : sort === "qtyDesc" ? [desc(books.qty), asc(books.title)]
+      : sort === "qtyAsc" ? [asc(books.qty), asc(books.title)]
+      : sort === "added" ? [desc(books.createdAt)]
+      : [desc(books.updatedAt)];
+
+    const rows = await db
+      .select()
+      .from(books)
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(...orderBy)
+      .limit(2000);
+
+    // 통계는 검색과 무관하게 전체 기준으로 보여줍니다.
+    const [totals] = await db
+      .select({
+        titles: sql<number>`count(*)::int`,
+        copies: sql<number>`coalesce(sum(${books.qty}), 0)::int`,
+        low: sql<number>`count(*) filter (where ${books.qty} > 0 and ${books.qty} <= ${threshold})::int`,
+        zero: sql<number>`count(*) filter (where ${books.qty} <= 0)::int`,
+      })
+      .from(books);
+
+    return NextResponse.json({ books: rows, totals });
+  } catch (err) {
+    return handleError(err);
+  }
+}
+
+// ─────────────── 직접 추가 ───────────────
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const title = str(body.title);
+    if (!title) return fail("도서명은 반드시 입력해야 합니다.");
+
+    const isbn = str(body.isbn) ?? "";
+    const author = str(body.author) ?? "";
+    const qty = Math.max(0, Math.round(Number(body.qty) || 0));
+    const matchKey = makeMatchKey({ isbn, title, author });
+
+    const values = {
+      matchKey,
+      isbn,
+      title,
+      author,
+      publisher: str(body.publisher) ?? "",
+      pubDate: str(body.pubDate) ?? "",
+      subject: str(body.subject) ?? "",
+      location: str(body.location) ?? "",
+      memo: str(body.memo) ?? "",
+      krw: num(body.krw) ?? null,
+      cad: num(body.cad) ?? null,
+      weight: num(body.weight) ?? null,
+      qty,
+    };
+
+    // 같은 책이 이미 있으면 새로 만들지 않고 수량을 더합니다.
+    const [saved] = await db
+      .insert(books)
+      .values(values)
+      .onConflictDoUpdate({
+        target: books.matchKey,
+        set: { qty: sql`${books.qty} + excluded.qty`, updatedAt: sql`now()` },
+      })
+      .returning();
+
+    const merged = saved.qty !== qty;
+    await db.insert(stockLogs).values({
+      bookId: saved.id,
+      delta: qty,
+      qtyAfter: saved.qty,
+      reason: merged ? "직접 입고" : "직접 등록",
+    });
+
+    return NextResponse.json({ book: saved, merged });
+  } catch (err) {
+    return handleError(err);
+  }
+}
+
+// ─────────────── 선택 항목 일괄 처리 ───────────────
+export async function PATCH(req: Request) {
+  try {
+    const body = await req.json();
+    const ids: number[] = Array.isArray(body.ids) ? body.ids.filter(Number.isInteger) : [];
+    if (!ids.length) return fail("선택된 항목이 없습니다.");
+
+    if (body.action === "delete") {
+      await db.delete(books).where(inArray(books.id, ids));
+      return NextResponse.json({ ok: true, deleted: ids.length });
+    }
+
+    const delta = Math.round(Number(body.delta));
+    if (!Number.isFinite(delta) || delta === 0) return fail("변경할 수량을 입력하세요.");
+
+    // 출고로 0 미만이 되는 경우 GREATEST 로 잘리므로, 이력에 남길 실제 변화량을
+    // 계산하려면 변경 전 수량이 필요합니다.
+    const before = new Map(
+      (await db.select({ id: books.id, qty: books.qty }).from(books).where(inArray(books.id, ids))).map(
+        (b) => [b.id, b.qty],
+      ),
+    );
+
+    const updated = await db
+      .update(books)
+      .set({ qty: sql`greatest(0, ${books.qty} + ${delta})`, updatedAt: sql`now()` })
+      .where(inArray(books.id, ids))
+      .returning({ id: books.id, qty: books.qty });
+
+    const logs = updated
+      .map((u) => ({
+        bookId: u.id,
+        delta: u.qty - (before.get(u.id) ?? u.qty),
+        qtyAfter: u.qty,
+        reason: delta > 0 ? "일괄 입고" : "일괄 출고",
+      }))
+      .filter((l) => l.delta !== 0);
+
+    if (logs.length) await db.insert(stockLogs).values(logs);
+
+    return NextResponse.json({ ok: true, updated: updated.length });
+  } catch (err) {
+    return handleError(err);
+  }
+}
