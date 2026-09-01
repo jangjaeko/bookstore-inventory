@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { and, asc, desc, gt, ilike, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, gt, inArray, lte, or, sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { db } from "@/lib/db";
 import { books, stockLogs } from "@/lib/schema";
 import { makeMatchKey, normIsbn } from "@/lib/parse";
@@ -19,19 +20,29 @@ export async function GET(req: Request) {
     const conditions = [];
 
     if (q) {
-      const like = `%${q}%`;
-      const digits = normIsbn(q);
+      // 사용자가 입력한 %, _, \ 는 LIKE 특수문자가 아니라 그냥 글자로 취급합니다.
+      const escapeLike = (s: string) => s.replace(/([\\%_])/g, "\\$1");
+
+      // 띄어쓰기를 무시하고 비교합니다.
+      // "우리아기"로도 "우리 아기 알록달록 색깔 촉감책"을 찾을 수 있어야 하고,
+      // 반대로 "우리 아기"로 검색해도 공백을 지운 쪽끼리 비교되므로 그대로 찾힙니다.
+      const needle = `%${escapeLike(q.toLowerCase().replace(/\s+/g, ""))}%`;
+      const squish = (col: AnyPgColumn) =>
+        sql`regexp_replace(lower(${col}), '\\s+', '', 'g') LIKE ${needle}`;
+
       const parts = [
-        ilike(books.title, like),
-        ilike(books.author, like),
-        ilike(books.publisher, like),
-        ilike(books.subject, like),
-        ilike(books.memo, like),
-        ilike(books.location, like),
+        squish(books.title),
+        squish(books.author),
+        squish(books.publisher),
+        squish(books.subject),
+        squish(books.memo),
+        squish(books.location),
       ];
+
       // ISBN 은 하이픈이 섞여 있을 수 있으므로 숫자만 남겨 비교합니다.
+      const digits = normIsbn(q);
       if (digits.length >= 3) {
-        parts.push(sql`regexp_replace(${books.isbn}, '[^0-9Xx]', '', 'g') ILIKE ${"%" + digits + "%"}`);
+        parts.push(sql`regexp_replace(${books.isbn}, '[^0-9Xx]', '', 'g') LIKE ${"%" + digits + "%"}`);
       }
       conditions.push(or(...parts));
     }

@@ -56,12 +56,24 @@ export type Preset = {
 export const BUILTIN_PRESETS: Record<string, Preset> = {
   auto: { name: "자동 감지", mapping: null },
   shipping: {
-    name: "선박 양식",
+    name: "선박 양식 · 16열 (A열 TOTAL 포함)",
     // TOTAL │ ISBN │ 제목 │ Unit Price │ 15% DC │ After DC │ Copies │ Amount │
     // Author │ Pub.Date │ (빈칸) │ Publisher │ Subject │ TOTAL │ KRW │ Weight
     mapping: [
       "qty", "isbn", "title", "cad", "", "", "", "",
       "author", "pubDate", "", "publisher", "subject", "", "krw", "weight",
+    ],
+  },
+  shipping15: {
+    name: "선박 양식 · 15열 (ISBN부터)",
+    // 위 양식에서 맨 앞 TOTAL 열이 빠진 형태. Chrome 확장이 복사해 주는 그대로입니다.
+    // ISBN │ 제목 │ Unit Price │ 15% DC │ After DC │ Copies │ Amount │
+    // Author │ Pub.Date │ (빈칸) │ Publisher │ Subject │ TOTAL │ KRW │ Weight
+    //
+    // 수량은 Copies(6열, 늘 1)가 아니라 TOTAL(13열)에서 가져옵니다.
+    mapping: [
+      "isbn", "title", "cad", "", "", "", "",
+      "author", "pubDate", "", "publisher", "subject", "qty", "krw", "weight",
     ],
   },
   sales: {

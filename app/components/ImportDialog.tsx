@@ -94,6 +94,11 @@ export default function ImportDialog({
   const { rows } = useMemo(() => splitRows(text, delim), [text, delim]);
   const width = rows.length ? Math.max(...rows.map((r) => r.length)) : 0;
 
+  // 고른 양식의 열 수와 붙여넣은 열 수가 다르면 값이 통째로 밀립니다.
+  // (예: 16열 선박 양식으로 15열 데이터를 붙여넣는 경우)
+  const presetWidth = presetOptions.find((p) => p.key === presetKey)?.mapping?.length ?? 0;
+  const widthMismatch = presetWidth > 0 && width > 0 && presetWidth !== width;
+
   // ── 붙여넣기 내용·양식·구분자가 바뀌면 열 지정을 다시 계산 ──
   useEffect(() => {
     if (!rows.length) {
@@ -401,6 +406,18 @@ export default function ImportDialog({
           ⚠️ 출고 문서에는 로마자 제목이나 메모(<code className="rounded bg-orange-100 px-1">Qty. increased upon request</code>)가 섞여
           있을 수 있습니다. 재고의 서지정보가 덮어써질 수 있으니 끄는 것을 권합니다.
         </p>
+      )}
+
+      {widthMismatch && (
+        <div className="mb-2 rounded-lg border border-orange-300 bg-orange-50 px-3 py-2 text-xs">
+          <b className="text-orange-800">
+            열 수가 안 맞습니다 — 고른 양식은 {presetWidth}열인데 붙여넣은 데이터는 {width}열입니다.
+          </b>
+          <div className="mt-1 text-gray-600">
+            값이 한 칸씩 밀려 있을 수 있습니다. 아래 표에서 각 열이 맞는지 확인하거나,
+            양식을 <b>자동 감지</b>로 바꾸거나, 열 수가 맞는 다른 양식을 골라 주세요.
+          </div>
+        </div>
       )}
 
       {mapping.length > 0 && (
