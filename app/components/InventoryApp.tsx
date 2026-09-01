@@ -355,55 +355,58 @@ export default function InventoryApp() {
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse bg-white">
-              <thead>
-                <tr className="[&>th]:sticky [&>th]:top-[45px] [&>th]:z-10 [&>th]:border-b-2 [&>th]:border-gray-200 [&>th]:bg-white [&>th]:px-2 [&>th]:py-2.5 [&>th]:text-left [&>th]:text-[11px] [&>th]:font-semibold [&>th]:tracking-wide [&>th]:text-gray-500 [&>th]:uppercase [&>th]:whitespace-nowrap">
-                  <th className="w-8">
-                    <input
-                      type="checkbox"
-                      checked={allChecked}
-                      onChange={(e) =>
-                        setSelected(e.target.checked ? new Set(books.map((b) => b.id)) : new Set())
-                      }
-                    />
-                  </th>
-                  <th>도서명 / 저자</th>
-                  <th>ISBN</th>
-                  <th>출판사</th>
-                  <th>출간</th>
-                  <th className="text-right!">정가(₩)</th>
-                  <th className="text-right!">CAD</th>
-                  <th className="text-right!">무게</th>
-                  <th className="w-32">수량</th>
-                  <th className="w-28" />
-                </tr>
-              </thead>
-              <tbody>
-                {books.map((b) => (
-                  <Row
-                    key={b.id}
-                    book={b}
-                    threshold={threshold}
-                    checked={selected.has(b.id)}
-                    onToggle={(on) =>
-                      setSelected((s) => {
-                        const next = new Set(s);
-                        if (on) next.add(b.id);
-                        else next.delete(b.id);
-                        return next;
-                      })
+          // 표를 overflow 래퍼로 감싸지 않습니다. 래퍼가 새 스크롤 컨테이너를 만들면
+          // sticky 머리글의 기준이 화면이 아니라 그 컨테이너가 되어, top 값만큼
+          // 머리글이 아래로 밀려 내려와 첫 행을 덮어버립니다.
+          // (검색 결과가 1건일 때 "표가 비어 보이는" 증상의 원인이었습니다.)
+          // 가로로 넘치면 페이지가 그대로 가로 스크롤됩니다.
+          <table className="w-full border-collapse bg-white">
+            <thead>
+              <tr className="[&>th]:sticky [&>th]:top-[45px] [&>th]:z-10 [&>th]:border-b-2 [&>th]:border-gray-200 [&>th]:bg-white [&>th]:px-2 [&>th]:py-2.5 [&>th]:text-left [&>th]:text-[11px] [&>th]:font-semibold [&>th]:tracking-wide [&>th]:text-gray-500 [&>th]:uppercase [&>th]:whitespace-nowrap">
+                <th className="w-8">
+                  <input
+                    type="checkbox"
+                    checked={allChecked}
+                    onChange={(e) =>
+                      setSelected(e.target.checked ? new Set(books.map((b) => b.id)) : new Set())
                     }
-                    onAdjust={(delta) => applyQty(b, { delta })}
-                    onSetQty={(qty) => applyQty(b, { qty })}
-                    onEdit={() => setEditing(b)}
-                    onLog={() => setLogFor(b)}
-                    onDelete={() => removeBook(b)}
                   />
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </th>
+                <th>도서명 / 저자</th>
+                <th>ISBN</th>
+                <th>출판사</th>
+                <th>출간</th>
+                <th className="text-right!">정가(₩)</th>
+                <th className="text-right!">CAD</th>
+                <th className="text-right!">무게</th>
+                <th className="w-32">수량</th>
+                <th className="w-28" />
+              </tr>
+            </thead>
+            <tbody>
+              {books.map((b) => (
+                <Row
+                  key={b.id}
+                  book={b}
+                  threshold={threshold}
+                  checked={selected.has(b.id)}
+                  onToggle={(on) =>
+                    setSelected((s) => {
+                      const next = new Set(s);
+                      if (on) next.add(b.id);
+                      else next.delete(b.id);
+                      return next;
+                    })
+                  }
+                  onAdjust={(delta) => applyQty(b, { delta })}
+                  onSetQty={(qty) => applyQty(b, { qty })}
+                  onEdit={() => setEditing(b)}
+                  onLog={() => setLogFor(b)}
+                  onDelete={() => removeBook(b)}
+                />
+              ))}
+            </tbody>
+          </table>
         )}
       </main>
 
