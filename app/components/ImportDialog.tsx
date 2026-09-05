@@ -17,6 +17,20 @@ type Direction = "in" | "out";
 /** matchKey → 현재 재고 */
 type StockMap = Map<string, { qty: number; title: string }>;
 
+/**
+ * 미리보기에서 줄마다 "무슨 일이 일어나는지" 보여 주는 딱지.
+ * 엑셀 중간에 사람이 비워 둔 줄이 조용히 지나가지 않도록,
+ * 왜 빠지는지(또는 왜 들어가는지)를 줄 단위로 밝힙니다.
+ */
+const ROW_VERDICT: Record<string, { label: string; cls: string; kind: "book" | "skip" | "merged"; hint: string }> = {
+  new: { label: "등록", cls: "text-green-700", kind: "book", hint: "재고에 없는 책이라 새로 등록됩니다" },
+  update: { label: "반영", cls: "text-accent", kind: "book", hint: "이미 있는 책이라 수량이 반영됩니다" },
+  merged: { label: "합침", cls: "text-accent", kind: "merged", hint: "윗줄 도서에 합쳐집니다" },
+  header: { label: "머리글", cls: "text-gray-400", kind: "skip", hint: "머리글 행이라 제외합니다" },
+  empty: { label: "빈 줄", cls: "text-gray-400", kind: "skip", hint: "도서명도 ISBN도 없어 제외합니다" },
+  noTitle: { label: "제목 없음", cls: "text-red-500", kind: "skip", hint: "ISBN 은 있는데 도서명이 비어 있어 제외합니다" },
+};
+
 export default function ImportDialog({
   open,
   onClose,
@@ -169,6 +183,13 @@ export default function ImportDialog({
     ).length;
     const mergedRows = plan.filter((p) => p.status === "merged").length;
 
+    // 수량 칸이 비어 있어 1권으로 처리될 줄. 엑셀에서 깜빡한 칸일 수 있으니 알려 줍니다.
+    const noQty = books.filter((p) => p.item?.qty == null).length;
+    // ISBN 은 있는데 도서명이 없어 버려지는 줄 (몇 번째 줄인지 알려 줍니다)
+    const noTitleLines = plan
+      .filter((p) => p.status === "noTitle")
+      .map((p) => p.idx + 1);
+
     // 같은 책이 여러 줄에 나오면 합쳐서 셉니다.
     const perBook = new Map<string, { title: string; qty: number }>();
     for (const p of books) {
@@ -189,6 +210,8 @@ export default function ImportDialog({
         zeroQty: 0,
         skipped,
         mergedRows,
+        noQty,
+        noTitleLines,
         missing: [] as string[],
         shortfall: [] as { title: string; had: number; needed: number }[],
         duplicates: books.length - perBook.size,
@@ -220,6 +243,8 @@ export default function ImportDialog({
       zeroQty,
       skipped,
       mergedRows,
+      noQty,
+      noTitleLines,
       missing,
       shortfall,
       duplicates: books.length - perBook.size,
@@ -432,6 +457,10 @@ export default function ImportDialog({
             <table className="min-w-full border-collapse">
               <thead>
                 <tr>
+                  <th className="sticky left-0 z-10 border border-gray-200 bg-gray-50 p-1.5 align-top">
+                    <div className="mb-1 text-[10px] text-gray-400">줄</div>
+                    <div className="text-[11px] font-semibold text-gray-500">결과</div>
+                  </th>
                   {mapping.map((field, i) => (
                     <th key={i} className="border border-gray-200 bg-gray-50 p-1.5 align-top">
                       <div className="mb-1 text-[10px] text-gray-400">{i + 1}열</div>
@@ -453,26 +482,41 @@ export default function ImportDialog({
                 </tr>
               </thead>
               <tbody>
-                {rows.slice(0, 8).map((row, r) => {
-                  const status = plan[r]?.status;
-                  const isMerged = status === "merged";
-                  const skip = status !== "new" && status !== "update" && !isMerged;
+                {rows.slice(0, 12).map((row, r) => {
+                  const p = plan[r];
+                  const v = ROW_VERDICT[p?.status ?? "empty"];
+                  const skip = v.kind === "skip";
+                  // 수량 칸이 비어 1권으로 처리되는 줄은 따로 표시합니다.
+                  const qtyGuessed = v.kind === "book" && p?.item?.qty == null;
                   return (
                     <tr
                       key={r}
-                      title={isMerged ? "윗줄 도서에 합쳐집니다" : undefined}
                       className={
                         skip
-                          ? "bg-gray-50 text-gray-300 line-through"
-                          : isMerged
+                          ? "bg-gray-50 text-gray-300"
+                          : v.kind === "merged"
                             ? "bg-accent-soft/60 text-gray-600"
                             : ""
                       }
                     >
+                      <td
+                        className="sticky left-0 z-10 border border-gray-200 bg-inherit px-1.5 py-1 whitespace-nowrap"
+                        title={v.hint}
+                      >
+                        <span className="mr-1 text-[10px] text-gray-400">{r + 1}</span>
+                        <span className={`text-[11px] font-semibold ${v.cls}`}>{v.label}</span>
+                        {qtyGuessed && (
+                          <span className="ml-1 text-[10px] text-orange-600" title="수량 칸이 비어 1권으로 처리됩니다">
+                            수량?
+                          </span>
+                        )}
+                      </td>
                       {mapping.map((_, i) => (
                         <td
                           key={i}
-                          className="max-w-48 truncate border border-gray-200 px-1.5 py-1 text-[11px] whitespace-nowrap"
+                          className={`max-w-48 truncate border border-gray-200 px-1.5 py-1 text-[11px] whitespace-nowrap ${
+                            skip ? "line-through" : ""
+                          }`}
                           title={row[i]}
                         >
                           {row[i]}
@@ -542,10 +586,33 @@ export default function ImportDialog({
                 같은 책 합침 <b className="text-sm">{summary.duplicates}</b>행
               </span>
             )}
-            {rows.length > 8 && (
-              <span className="ml-auto text-gray-400">전체 {rows.length}행 중 8행만 미리보기</span>
+            {rows.length > 12 && (
+              <span className="ml-auto text-gray-400">전체 {rows.length}줄 중 12줄만 미리보기</span>
             )}
           </div>
+
+          {/* ── 사람이 비워 둔 칸 안내 (조용히 지나가면 안 되는 것들) ── */}
+          {summary.noQty > 0 && (
+            <div className="mt-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs">
+              <b className="text-orange-800">수량 칸이 빈 줄이 {summary.noQty}개 있습니다 → 1권으로 처리합니다.</b>{" "}
+              <span className="text-gray-600">
+                엑셀에서 깜빡한 칸이면 지금 채우고 다시 붙여넣으세요. 미리보기의{" "}
+                <span className="font-semibold text-orange-600">수량?</span> 표시가 그 줄입니다.
+              </span>
+            </div>
+          )}
+          {summary.noTitleLines.length > 0 && (
+            <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs">
+              <b className="text-red-700">
+                ISBN 은 있는데 도서명이 빈 줄이 {summary.noTitleLines.length}개 있어 제외합니다.
+              </b>{" "}
+              <span className="text-gray-600">
+                {summary.noTitleLines.slice(0, 10).join(", ")}
+                {summary.noTitleLines.length > 10 && " …"}번째 줄. 도서명 열 지정이 맞는지, 엑셀에 제목이
+                빠지지 않았는지 확인하세요.
+              </span>
+            </div>
+          )}
 
           {/* ── 출고 경고 ── */}
           {outbound && summary.missing.length > 0 && (
