@@ -146,50 +146,134 @@ export function makeMatchKey(item: { isbn?: string | null; title?: string | null
 export type Delimiter = "auto" | "tab" | "spaces" | "comma";
 
 export function splitRows(text: string, mode: Delimiter = "auto"): { rows: string[][]; delim: Exclude<Delimiter, "auto"> } {
-  const lines = text.replace(/\r/g, "").split("\n").filter((l) => l.trim() !== "");
-  if (!lines.length) return { rows: [], delim: "tab" };
+  if (!text.trim()) return { rows: [], delim: "tab" };
 
   let delim: Exclude<Delimiter, "auto">;
   if (mode === "auto") {
     // 엑셀에서 복사하면 항상 탭입니다. 탭이 없을 때만 다른 구분자를 추측합니다.
-    if (lines.some((l) => l.includes("\t"))) delim = "tab";
-    else if (lines.some((l) => /\S {2,}\S/.test(l))) delim = "spaces";
-    else if (lines.some((l) => l.includes(","))) delim = "comma";
+    if (text.includes("\t")) delim = "tab";
+    else if (/\S {2,}\S/.test(text)) delim = "spaces";
+    else if (text.includes(",")) delim = "comma";
     else delim = "tab";
   } else {
     delim = mode;
   }
 
-  const split =
-    delim === "tab"
-      ? (l: string) => l.split("\t")
-      : delim === "spaces"
-        ? (l: string) => l.split(/ {2,}/)
-        : (l: string) => l.split(",");
+  const rows = tokenize(text, delim);
+  if (!rows.length) return { rows: [], delim };
 
-  const rows = lines.map((l) => split(l).map(unquote));
   const width = Math.max(...rows.map((r) => r.length));
   for (const r of rows) while (r.length < width) r.push("");
   return { rows, delim };
 }
 
 /**
- * 엑셀은 앞뒤 공백이나 특수문자가 든 셀을 큰따옴표로 감싸서 복사합니다.
- * 예: BPL 인보이스의 ISBN 이 `"    9791174760548"` 로 들어옴.
- * 따옴표를 벗기고 안쪽의 `""` 이스케이프도 풀어 줍니다.
+ * 구분자 기반 텍스트를 셀 배열로 자릅니다.
+ *
+ * 줄 단위(`split("\n")`)로 자르면 안 되는 이유:
+ * 엑셀에서 셀 안에 줄바꿈이 있으면 그 셀을 큰따옴표로 감싸고 **줄바꿈을 그대로** 내보냅니다.
+ *
+ *     1 <TAB> 9791193153710 <TAB> "
+ *     너를 아끼며 살아라 " <TAB> ... <TAB> 더블북
+ *
+ * 이걸 줄 단위로 자르면 한 권이 두 줄로 쪼개져, 앞줄은 "도서명 없음"으로 버려지고
+ * 뒷줄은 ISBN 없이 제목만 남아 재고와 이어지지 않습니다.
+ * 그래서 따옴표 안에서는 줄바꿈·구분자를 글자로 취급하는 토크나이저가 필요합니다.
  */
-function unquote(cell: string): string {
-  const t = cell.trim();
-  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
-    return t.slice(1, -1).replace(/""/g, '"').trim();
+function tokenize(text: string, delim: Exclude<Delimiter, "auto">): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  let i = 0;
+
+  // 셀 값 정리: 앞뒤 공백을 없애고, 안쪽의 줄바꿈·연속 공백은 한 칸으로 모읍니다.
+  // (따옴표 안의 줄바꿈이 제목 한가운데 남지 않도록)
+  const endField = () => {
+    row.push(field.replace(/\s+/g, " ").trim());
+    field = "";
+  };
+  const endRow = () => {
+    endField();
+    // 전부 빈 칸인 줄은 버립니다 (탭만 있는 빈 행)
+    if (row.some((c) => c !== "")) rows.push(row);
+    row = [];
+  };
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    if (quoted) {
+      if (ch === '"') {
+        // "" 는 따옴표 한 글자를 뜻합니다
+        if (text[i + 1] === '"') {
+          field += '"';
+          i += 2;
+          continue;
+        }
+        quoted = false;
+        i++;
+        continue;
+      }
+      field += ch;
+      i++;
+      continue;
+    }
+
+    // 셀이 아직 비어 있을 때 나온 따옴표만 "감싸는 따옴표"로 봅니다.
+    // (문장 중간의 인용부호를 잘못 먹지 않도록)
+    if (ch === '"' && field.trim() === "") {
+      quoted = true;
+      field = "";
+      i++;
+      continue;
+    }
+
+    if (ch === "\r") {
+      i++;
+      continue;
+    }
+    if (ch === "\n") {
+      endRow();
+      i++;
+      continue;
+    }
+
+    if (delim === "tab" && ch === "\t") {
+      endField();
+      i++;
+      continue;
+    }
+    if (delim === "comma" && ch === ",") {
+      endField();
+      i++;
+      continue;
+    }
+    if (delim === "spaces" && ch === " ") {
+      let j = i;
+      while (j < text.length && text[j] === " ") j++;
+      if (j - i >= 2) {
+        endField();
+      } else {
+        field += text.slice(i, j);
+      }
+      i = j;
+      continue;
+    }
+
+    field += ch;
+    i++;
   }
-  return t;
+
+  endRow(); // 마지막 줄 (끝에 줄바꿈이 없을 수 있음)
+  return rows;
 }
 
 const HEADER_WORDS = [
   "total", "isbn", "title", "author", "publisher", "subject", "krw", "copies",
   "amount", "unit price", "net price", "after dc", "discount", "dc", "pub.date",
   "pub. date", "pubdate", "series", "price", "other title", "pub.city", "pub. city",
+  "place of publication", "gram", "weight",
   "도서명", "제목", "저자", "출판사", "정가", "수량", "무게", "분류", "출간", "위치",
 ];
 
