@@ -31,6 +31,13 @@ const ROW_VERDICT: Record<string, { label: string; cls: string; kind: "book" | "
   noTitle: { label: "제목 없음", cls: "text-red-500", kind: "skip", hint: "ISBN 은 있는데 도서명이 비어 있어 제외합니다" },
 };
 
+/**
+ * 미리보기에 그릴 최대 줄 수. 상자 안에서 스크롤해 전부 훑어볼 수 있습니다.
+ * 수천 줄을 통째로 그리면 브라우저가 버벅이므로 상한을 둡니다
+ * (실제 주문서는 수십~수백 줄이라 걸릴 일이 거의 없습니다).
+ */
+const PREVIEW_LIMIT = 500;
+
 export default function ImportDialog({
   open,
   onClose,
@@ -449,16 +456,21 @@ export default function ImportDialog({
             {outbound && <> 수량 열에는 <b>나간 권수</b>를 지정하세요.</>}
           </p>
 
-          <div className="overflow-x-auto rounded-lg border border-gray-200">
+          {/*
+            가로·세로 모두 스크롤되는 상자.
+            열 지정 머리글은 위에, 줄 번호·결과 칸은 왼쪽에 고정해 두고 스크롤합니다.
+            (스크롤 상자 안에서의 sticky 라 기준이 이 상자가 되는 게 맞습니다)
+          */}
+          <div className="max-h-96 overflow-auto rounded-lg border border-gray-200">
             <table className="min-w-full border-collapse">
               <thead>
                 <tr>
-                  <th className="sticky left-0 z-10 border border-gray-200 bg-gray-50 p-1.5 align-top">
+                  <th className="sticky top-0 left-0 z-30 border border-gray-200 bg-gray-50 p-1.5 align-top">
                     <div className="mb-1 text-[10px] text-gray-400">줄</div>
                     <div className="text-[11px] font-semibold text-gray-500">결과</div>
                   </th>
                   {mapping.map((field, i) => (
-                    <th key={i} className="border border-gray-200 bg-gray-50 p-1.5 align-top">
+                    <th key={i} className="sticky top-0 z-20 border border-gray-200 bg-gray-50 p-1.5 align-top">
                       <div className="mb-1 text-[10px] text-gray-400">{i + 1}열</div>
                       <select
                         value={field}
@@ -478,7 +490,7 @@ export default function ImportDialog({
                 </tr>
               </thead>
               <tbody>
-                {rows.slice(0, 12).map((row, r) => {
+                {rows.slice(0, PREVIEW_LIMIT).map((row, r) => {
                   const p = plan[r];
                   const v = ROW_VERDICT[p?.status ?? "empty"];
                   const skip = v.kind === "skip";
@@ -489,11 +501,13 @@ export default function ImportDialog({
                     <tr
                       key={r}
                       className={
+                        // 왼쪽 고정 칸이 bg-inherit 이라, 줄마다 불투명한 배경이 있어야
+                        // 스크롤할 때 뒤 내용이 비쳐 보이지 않습니다.
                         skip
                           ? "bg-gray-50 text-gray-300"
                           : v.kind === "merged"
                             ? "bg-accent-soft/60 text-gray-600"
-                            : ""
+                            : "bg-white"
                       }
                     >
                       <td
@@ -583,9 +597,11 @@ export default function ImportDialog({
                 같은 책 합침 <b className="text-sm">{summary.duplicates}</b>행
               </span>
             )}
-            {rows.length > 12 && (
-              <span className="ml-auto text-gray-400">전체 {rows.length}줄 중 12줄만 미리보기</span>
-            )}
+            <span className="ml-auto text-gray-400">
+              {rows.length > PREVIEW_LIMIT
+                ? `전체 ${rows.length}줄 중 앞 ${PREVIEW_LIMIT}줄 미리보기 (반영은 전체)`
+                : `${rows.length}줄 전체 미리보기 · 표 안에서 스크롤`}
+            </span>
           </div>
 
           {/* ── 사람이 비워 둔 칸 안내 ── */}
