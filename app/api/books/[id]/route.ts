@@ -26,27 +26,59 @@ export async function PATCH(req: Request, { params }: Ctx) {
     // ── 수량만 바꾸는 경우 ──
     const isQtyOnly = body.delta !== undefined || (body.qty !== undefined && body.title === undefined);
     if (isQtyOnly) {
-      const next =
-        body.delta !== undefined
-          ? Math.max(0, current.qty + Math.round(Number(body.delta) || 0))
-          : Math.max(0, Math.round(Number(body.qty) || 0));
+      /**
+       * ＋/－ 버튼을 빠르게 연타하면 요청이 동시에 날아옵니다.
+       * "읽어서 더한 뒤 쓰기" 로 하면 서로의 결과를 덮어써 클릭이 조용히 사라집니다
+       * (실측: +1 을 10번 동시에 보내면 10권이 아니라 2권이 됨).
+       *
+       * 그래서 한 문장 안에서 처리합니다:
+       *   1) CTE 에서 `FOR UPDATE` 로 그 행을 잠그고 **최신** 수량을 읽고
+       *   2) 그 값에 delta 를 더해 씁니다.
+       *
+       * `FOR UPDATE` 가 핵심입니다. 잠금이 없으면 CTE 가 문장 시작 시점의 옛 스냅샷을
+       * 읽어서, 수량 자체는 맞아도 이력의 변화량이 부풀려집니다
+       * (실측: +1 을 71번 했는데 합계가 144 로 기록됨).
+       */
+      const delta = body.delta !== undefined ? Math.round(Number(body.delta) || 0) : null;
+      const nextQty = delta === null ? Math.max(0, Math.round(Number(body.qty) || 0)) : null;
 
-      if (next === current.qty) return NextResponse.json({ book: current });
+      // neon-http 의 execute 는 { rows: [...] } 를 돌려줍니다 (배열이 아님).
+      const result = (await db.execute(
+        delta !== null
+          ? sql`
+              with prev as (select qty from ${books} where id = ${id} for update)
+              update ${books}
+                 set qty = greatest(0, prev.qty + ${delta}), updated_at = now()
+                from prev
+               where ${books}.id = ${id}
+              returning ${books}.*, prev.qty as prev_qty`
+          : sql`
+              with prev as (select qty from ${books} where id = ${id} for update)
+              update ${books}
+                 set qty = ${nextQty}, updated_at = now()
+                from prev
+               where ${books}.id = ${id}
+              returning ${books}.*, prev.qty as prev_qty`,
+      )) as unknown as { rows?: Record<string, unknown>[] } | Record<string, unknown>[];
 
-      const [saved] = await db
-        .update(books)
-        .set({ qty: next, updatedAt: sql`now()` })
-        .where(eq(books.id, id))
-        .returning();
+      const rows = Array.isArray(result) ? result : (result.rows ?? []);
+      const row = rows[0];
+      if (!row) return fail("수량을 바꾸지 못했습니다.", 500);
 
-      await db.insert(stockLogs).values({
-        bookId: id,
-        delta: next - current.qty,
-        qtyAfter: next,
-        reason: str(body.reason) || (body.delta !== undefined ? (next > current.qty ? "입고" : "출고") : "직접 수정"),
-      });
+      const prevQty = Number(row.prev_qty);
+      const savedQty = Number(row.qty);
+      const changed = savedQty - prevQty;
 
-      return NextResponse.json({ book: saved });
+      if (changed !== 0) {
+        await db.insert(stockLogs).values({
+          bookId: id,
+          delta: changed,
+          qtyAfter: savedQty,
+          reason: str(body.reason) || (delta !== null ? (changed > 0 ? "입고" : "출고") : "직접 수정"),
+        });
+      }
+
+      return NextResponse.json({ book: { ...current, qty: savedQty, updatedAt: row.updated_at } });
     }
 
     // ── 전체 편집 ──
