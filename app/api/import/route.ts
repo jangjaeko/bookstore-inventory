@@ -15,6 +15,8 @@ const CHUNK = 400;
 type InMode = "add" | "replace" | "skip";
 /** in = 매입/입고(재고 증가), out = 납품/판매(재고 감소) */
 type Direction = "in" | "out";
+/** 이미 있는 책의 서지정보를 어디까지 새 값으로 바꿀지 */
+type MetaMode = "all" | "safe" | "none";
 
 export async function POST(req: Request) {
   try {
@@ -23,7 +25,14 @@ export async function POST(req: Request) {
     const mapping: string[] = Array.isArray(body.mapping) ? body.mapping : [];
     const direction: Direction = body.direction === "out" ? "out" : "in";
     const mode: InMode = ["add", "replace", "skip"].includes(body.mode) ? body.mode : "add";
-    const updateMeta = body.updateMeta === true;
+    // all  = 서지정보 전부 갱신
+    // safe = 가격·분류·출간일만 갱신 (제목·저자·출판사는 그대로 둠)
+    // none = 갱신 안 함
+    const metaMode: MetaMode = ["all", "safe", "none"].includes(body.metaMode)
+      ? body.metaMode
+      : body.updateMeta === true // 예전 방식 호환
+        ? "all"
+        : "none";
     const multiRow = body.multiRow === true;
     // 이력에 남길 사유. 예: "BPL 납품 2026-08"
     const reason = (str(body.reason) || "").slice(0, 80);
@@ -96,8 +105,8 @@ export async function POST(req: Request) {
 
     const result =
       direction === "out"
-        ? await applyOutbound(values, before, reason)
-        : await applyInbound(values, before, mode, updateMeta, reason);
+        ? await applyOutbound(values, before, metaMode, reason)
+        : await applyInbound(values, before, mode, metaMode, reason);
 
     return NextResponse.json({
       ok: true,
@@ -115,28 +124,43 @@ export async function POST(req: Request) {
 // ─────────────────────────────────────────────────────────────
 // 입고 (매입) — 없으면 새로 만들고, 있으면 mode 대로 수량 반영
 // ─────────────────────────────────────────────────────────────
+/**
+ * 이미 있는 책에 새 값을 덮어쓸 컬럼들.
+ * 새로 들어온 값이 비어 있지 않으면 **새 값이 이깁니다** (coalesce 로 빈 값만 걸러냄).
+ *
+ * safe 는 제목·저자·출판사를 건드리지 않습니다. 납품 인보이스에는 로마자 표기나
+ * "Qty. increased upon request" 같은 메모가 그 자리에 들어 있을 수 있어서,
+ * 가격·분류만 최신으로 맞추고 한글 서지정보는 지키기 위해서입니다.
+ */
+function metaFields(mode: MetaMode) {
+  if (mode === "none") return {};
+  const shared = {
+    pubDate: sql`coalesce(nullif(excluded.pub_date, ''), ${books.pubDate})`,
+    subject: sql`coalesce(nullif(excluded.subject, ''), ${books.subject})`,
+    krw: sql`coalesce(excluded.krw, ${books.krw})`,
+    cad: sql`coalesce(excluded.cad, ${books.cad})`,
+    weight: sql`coalesce(excluded.weight, ${books.weight})`,
+  };
+  if (mode === "safe") return shared;
+  return {
+    ...shared,
+    isbn: sql`coalesce(nullif(excluded.isbn, ''), ${books.isbn})`,
+    title: sql`coalesce(nullif(excluded.title, ''), ${books.title})`,
+    author: sql`coalesce(nullif(excluded.author, ''), ${books.author})`,
+    publisher: sql`coalesce(nullif(excluded.publisher, ''), ${books.publisher})`,
+    location: sql`coalesce(nullif(excluded.location, ''), ${books.location})`,
+    memo: sql`coalesce(nullif(excluded.memo, ''), ${books.memo})`,
+  };
+}
+
 async function applyInbound(
   values: NewBook[],
   before: Map<string, { qty: number }>,
   mode: InMode,
-  updateMeta: boolean,
+  metaMode: MetaMode,
   reason: string,
 ) {
-  const metaSet = updateMeta
-    ? {
-        isbn: sql`coalesce(nullif(excluded.isbn, ''), ${books.isbn})`,
-        title: sql`coalesce(nullif(excluded.title, ''), ${books.title})`,
-        author: sql`coalesce(nullif(excluded.author, ''), ${books.author})`,
-        publisher: sql`coalesce(nullif(excluded.publisher, ''), ${books.publisher})`,
-        pubDate: sql`coalesce(nullif(excluded.pub_date, ''), ${books.pubDate})`,
-        subject: sql`coalesce(nullif(excluded.subject, ''), ${books.subject})`,
-        location: sql`coalesce(nullif(excluded.location, ''), ${books.location})`,
-        memo: sql`coalesce(nullif(excluded.memo, ''), ${books.memo})`,
-        krw: sql`coalesce(excluded.krw, ${books.krw})`,
-        cad: sql`coalesce(excluded.cad, ${books.cad})`,
-        weight: sql`coalesce(excluded.weight, ${books.weight})`,
-      }
-    : {};
+  const metaSet = metaFields(metaMode);
 
   const saved: { id: number; matchKey: string; qty: number }[] = [];
   for (let i = 0; i < values.length; i += CHUNK) {
@@ -191,6 +215,7 @@ async function applyInbound(
 async function applyOutbound(
   values: NewBook[],
   before: Map<string, { qty: number; title: string }>,
+  metaMode: MetaMode,
   reason: string,
 ) {
   const missing: string[] = [];
@@ -225,6 +250,7 @@ async function applyOutbound(
       .onConflictDoUpdate({
         target: books.matchKey,
         set: {
+          ...metaFields(metaMode),
           qty: sql`greatest(0, ${books.qty} - excluded.qty)`,
           updatedAt: sql`now()`,
         },

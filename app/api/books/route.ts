@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { and, asc, desc, gt, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, like, lte, or, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
+import { subjectGroup, subjectGroupPatterns } from "@/lib/format";
 import { db } from "@/lib/db";
 import { books, stockLogs } from "@/lib/schema";
 import { makeMatchKey, normIsbn } from "@/lib/parse";
@@ -52,6 +53,17 @@ export async function GET(req: Request) {
     else if (filter === "low") conditions.push(lte(books.qty, threshold));
     else if (filter === "zero") conditions.push(lte(books.qty, 0));
 
+    // 큰 분류로 거르기. "FIC" 가 "FICTION" 까지 잡지 않도록 구분자까지 붙여 비교합니다.
+    const subjectParam = (url.searchParams.get("subject") ?? "").trim();
+    if (subjectParam === "__none__") {
+      conditions.push(eq(books.subject, ""));
+    } else if (subjectParam) {
+      const p = subjectGroupPatterns(subjectParam);
+      conditions.push(
+        or(eq(books.subject, p.exact), like(books.subject, p.gt), like(books.subject, p.dash)),
+      );
+    }
+
     const orderBy =
       sort === "title" ? [asc(books.title)]
       : sort === "qtyDesc" ? [desc(books.qty), asc(books.title)]
@@ -76,7 +88,25 @@ export async function GET(req: Request) {
       })
       .from(books);
 
-    return NextResponse.json({ books: rows, totals });
+    // 보기 드롭다운에 쓸 큰 분류 목록. 걸러진 결과가 아니라 전체 기준으로 셉니다.
+    // (서로 다른 Subject 는 수십 가지뿐이라 모아서 JS 로 묶는 편이 간단합니다)
+    const subjectRows = await db
+      .select({ subject: books.subject, n: sql<number>`count(*)::int` })
+      .from(books)
+      .groupBy(books.subject);
+
+    const groupCount = new Map<string, number>();
+    let noSubject = 0;
+    for (const r of subjectRows) {
+      const g = subjectGroup(r.subject);
+      if (!g) noSubject += r.n;
+      else groupCount.set(g, (groupCount.get(g) ?? 0) + r.n);
+    }
+    const subjects = [...groupCount.entries()]
+      .map(([group, n]) => ({ group, n }))
+      .sort((a, b) => b.n - a.n || a.group.localeCompare(b.group, "ko"));
+
+    return NextResponse.json({ books: rows, totals, subjects, noSubject });
   } catch (err) {
     return handleError(err);
   }

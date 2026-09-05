@@ -14,6 +14,8 @@ import { Button, Modal, Select } from "./ui";
 
 type InMode = "add" | "replace" | "skip";
 type Direction = "in" | "out";
+/** 이미 있는 책의 서지정보를 어디까지 새 값으로 바꿀지 */
+type MetaMode = "all" | "safe" | "none";
 /** matchKey → 현재 재고 */
 type StockMap = Map<string, { qty: number; title: string }>;
 
@@ -52,7 +54,7 @@ export default function ImportDialog({
   const [presetKey, setPresetKey] = useState("auto");
   const [direction, setDirection] = useState<Direction>("in");
   const [mode, setMode] = useState<InMode>("add");
-  const [updateMeta, setUpdateMeta] = useState(true);
+  const [metaMode, setMetaMode] = useState<MetaMode>("all");
   const [multiRow, setMultiRow] = useState(false);
   const [reason, setReason] = useState("");
 
@@ -106,7 +108,8 @@ export default function ImportDialog({
     setMultiRow(preset.multiRow);
     if (preset.direction) {
       setDirection(preset.direction);
-      if (preset.direction === "out") setUpdateMeta(false);
+      // 납품 인보이스는 가격·분류만 새 값으로 (제목·저자는 로마자라 건드리면 안 됨)
+      setMetaMode(preset.direction === "out" ? "safe" : "all");
     }
     // 양식을 바꿀 때만 반응합니다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -297,7 +300,7 @@ export default function ImportDialog({
       const res = await fetch("/api/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rows, mapping, direction, mode, updateMeta, multiRow, reason }),
+        body: JSON.stringify({ rows, mapping, direction, mode, metaMode, multiRow, reason }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "반영에 실패했습니다.");
@@ -405,10 +408,15 @@ export default function ImportDialog({
           </Select>
         )}
 
-        <label className="flex items-center gap-1.5 text-xs text-gray-500">
-          <input type="checkbox" checked={updateMeta} onChange={(e) => setUpdateMeta(e.target.checked)} />
-          서지정보(저자·출판사 등)도 갱신
-        </label>
+        <Select
+          label="새 값으로 갱신"
+          value={metaMode}
+          onChange={(e) => setMetaMode(e.target.value as MetaMode)}
+        >
+          <option value="all">전부 (제목·저자·출판사까지)</option>
+          <option value="safe">가격·분류·출간일만</option>
+          <option value="none">갱신 안 함</option>
+        </Select>
 
         <label
           className="flex items-center gap-1.5 text-xs text-gray-500"
@@ -429,10 +437,24 @@ export default function ImportDialog({
         </label>
       </div>
 
-      {outbound && updateMeta && (
+      {metaMode !== "none" && (
+        <p className="mb-2 text-xs text-gray-500">
+          {metaMode === "safe" ? (
+            <>
+              같은 책이 이미 있으면 <b>가격(CAD·정가)·분류·출간일·무게</b>를 새 값으로 바꿉니다.
+              제목·저자·출판사는 그대로 둡니다.
+            </>
+          ) : (
+            <>같은 책이 이미 있으면 <b>비어 있지 않은 모든 값</b>을 새 값으로 바꿉니다.</>
+          )}
+        </p>
+      )}
+
+      {outbound && metaMode === "all" && (
         <p className="mb-2 text-xs text-orange-700">
-          ⚠️ 출고 문서에는 로마자 제목이나 메모(<code className="rounded bg-orange-100 px-1">Qty. increased upon request</code>)가 섞여
-          있을 수 있습니다. 재고의 서지정보가 덮어써질 수 있으니 끄는 것을 권합니다.
+          ⚠️ 납품 인보이스에는 로마자 제목이나 메모(
+          <code className="rounded bg-orange-100 px-1">Qty. increased upon request</code>)가 제목 칸에 들어
+          있기도 합니다. 한글 서지정보가 덮어써질 수 있으니 <b>가격·분류·출간일만</b>을 권합니다.
         </p>
       )}
 

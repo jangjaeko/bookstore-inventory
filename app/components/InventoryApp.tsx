@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { COPY_FORMATS, buildCsv, fmtInt, type CopyFormatKey } from "@/lib/format";
+import {
+  COPY_FORMATS,
+  buildCsv,
+  fmtInt,
+  subjectDetail,
+  subjectGroup,
+  type CopyFormatKey,
+} from "@/lib/format";
 import { isValidIsbn } from "@/lib/parse";
 import type { BookDTO, FilterKey, SortKey, Totals } from "@/lib/types";
 import { Button, Select } from "./ui";
@@ -28,6 +35,10 @@ export default function InventoryApp() {
   const [filter, setFilter] = useState<FilterKey>("all");
   // 부족 기준 기본값 0 = 품절(0권)만 빨갛게, 주황 "부족" 경고는 안 띄웁니다.
   const [threshold, setThreshold] = useState(0);
+  /** "" = 전체, "__none__" = 분류 없는 책, 그 밖에는 큰 분류 이름 */
+  const [subject, setSubject] = useState("");
+  const [subjects, setSubjects] = useState<{ group: string; n: number }[]>([]);
+  const [noSubject, setNoSubject] = useState(0);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkAmount, setBulkAmount] = useState(1);
@@ -54,13 +65,14 @@ export default function InventoryApp() {
       if (saved.sort) setSort(saved.sort);
       if (saved.filter) setFilter(saved.filter);
       if (typeof saved.threshold === "number") setThreshold(saved.threshold);
+      if (typeof saved.subject === "string") setSubject(saved.subject);
     } catch {
       /* 저장된 설정이 깨졌으면 기본값 사용 */
     }
   }, []);
   useEffect(() => {
-    localStorage.setItem(VIEW_KEY, JSON.stringify({ sort, filter, threshold }));
-  }, [sort, filter, threshold]);
+    localStorage.setItem(VIEW_KEY, JSON.stringify({ sort, filter, threshold, subject }));
+  }, [sort, filter, threshold, subject]);
 
   // ── 검색어 디바운스 ──
   useEffect(() => {
@@ -77,6 +89,7 @@ export default function InventoryApp() {
         sort,
         filter,
         threshold: String(threshold),
+        subject,
       });
       const res = await fetch(`/api/books?${params}`);
       if (res.status === 401) return router.push("/login");
@@ -84,12 +97,14 @@ export default function InventoryApp() {
       if (!res.ok) throw new Error(data.error ?? "목록을 불러오지 못했습니다.");
       setBooks(data.books);
       setTotals(data.totals ?? EMPTY_TOTALS);
+      setSubjects(data.subjects ?? []);
+      setNoSubject(data.noSubject ?? 0);
     } catch (err) {
       showToast(err instanceof Error ? err.message : "목록을 불러오지 못했습니다.");
     } finally {
       setLoading(false);
     }
-  }, [debouncedQ, sort, filter, threshold, router, showToast]);
+  }, [debouncedQ, sort, filter, threshold, subject, router, showToast]);
 
   useEffect(() => {
     void refresh();
@@ -287,6 +302,16 @@ export default function InventoryApp() {
           <option value="zero">품절만</option>
         </Select>
 
+        <Select label="분류" value={subject} onChange={(e) => setSubject(e.target.value)}>
+          <option value="">전체 분류</option>
+          {subjects.map((s) => (
+            <option key={s.group} value={s.group}>
+              {s.group} ({s.n})
+            </option>
+          ))}
+          {noSubject > 0 && <option value="__none__">분류 없음 ({noSubject})</option>}
+        </Select>
+
         <label className="flex items-center gap-1.5 text-xs text-gray-500">
           부족 기준 ≤
           <input
@@ -381,6 +406,7 @@ export default function InventoryApp() {
                 <th>도서명 / 저자</th>
                 <th>ISBN</th>
                 <th>출판사</th>
+                <th>분류</th>
                 <th>출간</th>
                 <th className="text-right!">정가(₩)</th>
                 <th className="text-right!">CAD</th>
@@ -512,6 +538,21 @@ function Row({
       </td>
 
       <td className="text-[13px]">{b.publisher}</td>
+
+      {/* 큰 분류를 굵게, 그 아래 세부 분류. 전체 값은 마우스를 올리면 보입니다. */}
+      <td className="max-w-44 text-[12px]" title={b.subject}>
+        {b.subject ? (
+          <>
+            <div className="truncate font-semibold text-gray-700">{subjectGroup(b.subject)}</div>
+            {subjectDetail(b.subject) && (
+              <div className="truncate text-[11px] text-gray-400">{subjectDetail(b.subject)}</div>
+            )}
+          </>
+        ) : (
+          <span className="text-gray-300">—</span>
+        )}
+      </td>
+
       <td className="text-[13px] whitespace-nowrap">{b.pubDate}</td>
       <td className="text-right text-[13px] whitespace-nowrap">{fmtInt(b.krw)}</td>
       <td className="text-right text-[13px] whitespace-nowrap">{b.cad?.toFixed(2) ?? ""}</td>

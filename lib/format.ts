@@ -79,6 +79,58 @@ export function buildCsv(books: BookLike[]): string {
   return "﻿" + lines.join("\r\n");
 }
 
+// ─────────────────────────────────────────────────────────────
+// Subject 분류 묶기
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 첫 조각만 떼면 의미가 없어 한 단계 더 들어가야 하는 뿌리 분류들.
+ * 예: "KOR > Learning English > ..." 에서 "KOR" 은 절반 이상의 책에 붙어 있어
+ *     걸러내는 의미가 없습니다. "KOR > Learning English" 여야 쓸모가 있습니다.
+ */
+const BROAD_ROOTS = new Set(["kor", "국내도서", "해외도서", "외국도서"]);
+
+/** Subject 를 나누는 구분자: " > " 또는 " - " (Self-Help 처럼 붙어 있는 하이픈은 제외) */
+const SUBJECT_SPLIT = /\s*>\s*|\s+-\s+/;
+
+/**
+ * Subject 를 "보기" 기준으로 쓸 큰 분류로 자릅니다.
+ *
+ *   "KOR FIC > GEN SS"                  → "KOR FIC"
+ *   "FIC - GEN SS"                      → "FIC"
+ *   "KOR Essays"                        → "KOR Essays"   (구분자 없으면 통째로)
+ *   "KOR > Learning English > Writing"  → "KOR > Learning English"
+ *   "국내도서 > 어린이 > 1-2학년 > …"      → "국내도서 > 어린이"
+ */
+export function subjectGroup(subject: string | null | undefined): string {
+  const parts = String(subject ?? "")
+    .split(SUBJECT_SPLIT)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!parts.length) return "";
+  if (parts.length > 1 && BROAD_ROOTS.has(parts[0].toLowerCase())) {
+    return `${parts[0]} > ${parts[1]}`;
+  }
+  return parts[0];
+}
+
+/** 큰 분류를 뺀 나머지 세부 분류. "KOR FIC > GEN SS" → "GEN SS" */
+export function subjectDetail(subject: string | null | undefined): string {
+  const full = String(subject ?? "").trim();
+  const group = subjectGroup(full);
+  if (!group || full === group) return "";
+  return full.slice(group.length).replace(/^\s*(>|-)\s*/, "").trim();
+}
+
+/**
+ * 큰 분류에 속하는 Subject 를 SQL 로 찾기 위한 조건.
+ * 정확히 같거나, 뒤에 구분자가 이어지는 것만 고릅니다.
+ * (단순 접두어 검색이면 "FIC" 가 "FICTION" 까지 잡아 버립니다)
+ */
+export function subjectGroupPatterns(group: string): { exact: string; gt: string; dash: string } {
+  return { exact: group, gt: `${group} >%`, dash: `${group} -%` };
+}
+
 // ─── 표시용 포맷 ───
 export const fmtInt = (n: number | null | undefined) =>
   n == null ? "" : n.toLocaleString("ko-KR");
