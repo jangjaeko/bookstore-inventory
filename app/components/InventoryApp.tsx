@@ -12,6 +12,9 @@ import LogDialog from "./LogDialog";
 
 const EMPTY_TOTALS: Totals = { titles: 0, copies: 0, low: 0, zero: 0 };
 
+/** 정렬·보기·부족 기준을 브라우저에 기억시키는 키 (기본값을 바꾸면 뒤 숫자를 올립니다) */
+const VIEW_KEY = "bi_view2";
+
 export default function InventoryApp() {
   const router = useRouter();
 
@@ -23,7 +26,8 @@ export default function InventoryApp() {
   const [debouncedQ, setDebouncedQ] = useState("");
   const [sort, setSort] = useState<SortKey>("updated");
   const [filter, setFilter] = useState<FilterKey>("all");
-  const [threshold, setThreshold] = useState(2);
+  // 부족 기준 기본값 0 = 품절(0권)만 빨갛게, 주황 "부족" 경고는 안 띄웁니다.
+  const [threshold, setThreshold] = useState(0);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkAmount, setBulkAmount] = useState(1);
@@ -42,9 +46,11 @@ export default function InventoryApp() {
   }, []);
 
   // ── 화면 설정은 브라우저에 기억시킵니다 (재고 데이터는 서버에 있습니다) ──
+  // 키 뒤의 숫자는 기본값을 바꿨을 때 올립니다. 예전 키에 저장된 값은 무시되어
+  // 모든 브라우저가 새 기본값으로 한 번 초기화됩니다.
   useEffect(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem("bi_view") ?? "{}");
+      const saved = JSON.parse(localStorage.getItem(VIEW_KEY) ?? "{}");
       if (saved.sort) setSort(saved.sort);
       if (saved.filter) setFilter(saved.filter);
       if (typeof saved.threshold === "number") setThreshold(saved.threshold);
@@ -53,7 +59,7 @@ export default function InventoryApp() {
     }
   }, []);
   useEffect(() => {
-    localStorage.setItem("bi_view", JSON.stringify({ sort, filter, threshold }));
+    localStorage.setItem(VIEW_KEY, JSON.stringify({ sort, filter, threshold }));
   }, [sort, filter, threshold]);
 
   // ── 검색어 디바운스 ──

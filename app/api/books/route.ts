@@ -15,7 +15,8 @@ export async function GET(req: Request) {
     const q = (url.searchParams.get("q") ?? "").trim();
     const filter = url.searchParams.get("filter") ?? "all";
     const sort = url.searchParams.get("sort") ?? "updated";
-    const threshold = Number(url.searchParams.get("threshold") ?? 2) || 0;
+    // 부족 기준. 화면에서 늘 함께 보내지만, 없거나 이상한 값이면 0(품절만)으로 봅니다.
+    const threshold = Math.max(0, Number(url.searchParams.get("threshold")) || 0);
 
     const conditions = [];
 
