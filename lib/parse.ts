@@ -58,7 +58,12 @@ export const BUILTIN_PRESETS: Record<string, Preset> = {
   shipping: {
     name: "선박 양식 · 16열 (A열 TOTAL 포함)",
     // TOTAL │ ISBN │ 제목 │ Unit Price │ 15% DC │ After DC │ Copies │ Amount │
-    // Author │ Pub.Date │ (빈칸) │ Publisher │ Subject │ TOTAL │ KRW │ Weight
+    // Author │ Pub.Date │ Place Of Publication │ Publisher │ Subject │ Copies │ KRW │ Gram
+    //
+    // ★ 수량은 반드시 A열 TOTAL(1열)에서 가져옵니다.
+    //   중간의 Copies(7열)와 뒤쪽 Copies(14열)는 나중에 도서관 납품 양식에 붙여넣기
+    //   편하려고 만들어 둔 칸이라 실제 재고 수량이 아닙니다. 값이 서로 다를 수 있고
+    //   (예: TOTAL 2 / Copies 3), 비어 있기도 합니다.
     mapping: [
       "qty", "isbn", "title", "cad", "", "", "", "",
       "author", "pubDate", "", "publisher", "subject", "", "krw", "weight",
@@ -68,9 +73,9 @@ export const BUILTIN_PRESETS: Record<string, Preset> = {
     name: "선박 양식 · 15열 (ISBN부터)",
     // 위 양식에서 맨 앞 TOTAL 열이 빠진 형태. Chrome 확장이 복사해 주는 그대로입니다.
     // ISBN │ 제목 │ Unit Price │ 15% DC │ After DC │ Copies │ Amount │
-    // Author │ Pub.Date │ (빈칸) │ Publisher │ Subject │ TOTAL │ KRW │ Weight
+    // Author │ Pub.Date │ (빈칸) │ Publisher │ Subject │ TOTAL │ KRW │ Gram
     //
-    // 수량은 Copies(6열, 늘 1)가 아니라 TOTAL(13열)에서 가져옵니다.
+    // ★ 여기서도 수량은 TOTAL(13열)입니다. Copies(6열, 늘 1)가 아닙니다.
     mapping: [
       "isbn", "title", "cad", "", "", "", "",
       "author", "pubDate", "", "publisher", "subject", "qty", "krw", "weight",

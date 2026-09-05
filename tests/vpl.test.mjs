@@ -105,8 +105,15 @@ test("정상 행의 모든 값이 제자리에 들어간다", () => {
 });
 
 test("수량은 Copies 가 아니라 A열 TOTAL 에서 온다", () => {
+  // Copies(7열·14열)는 나중에 도서관 납품 양식에 붙여넣으려고 만들어 둔 칸이라
+  // 실제 재고 수량이 아닙니다. TOTAL 과 값이 다를 수 있습니다.
   const it = items().find((i) => i.title === "바깥은 여름");
-  assert.equal(it.qty, 2, "A열 TOTAL=2 (뒤쪽 Copies 열은 3)");
+  assert.equal(it.qty, 2, "A열 TOTAL=2 (7열 Copies=2, 14열 Copies=3)");
+
+  // 매핑 자체를 못 박아 둡니다 — Copies 열은 절대 수량으로 쓰지 않습니다.
+  assert.equal(SHIP.indexOf("qty"), 0, "수량은 A열 TOTAL");
+  assert.equal(SHIP[6], "", "7열 Copies 는 사용 안 함");
+  assert.equal(SHIP[13], "", "14열 Copies 는 사용 안 함");
 });
 
 test("ISBN 에 '/절판' 이 붙어도 같은 책으로 식별된다", () => {

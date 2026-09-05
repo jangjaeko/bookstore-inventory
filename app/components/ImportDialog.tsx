@@ -183,8 +183,6 @@ export default function ImportDialog({
     ).length;
     const mergedRows = plan.filter((p) => p.status === "merged").length;
 
-    // 수량 칸이 비어 있어 1권으로 처리될 줄. 엑셀에서 깜빡한 칸일 수 있으니 알려 줍니다.
-    const noQty = books.filter((p) => p.item?.qty == null).length;
     // ISBN 은 있는데 도서명이 없어 버려지는 줄 (몇 번째 줄인지 알려 줍니다)
     const noTitleLines = plan
       .filter((p) => p.status === "noTitle")
@@ -210,7 +208,6 @@ export default function ImportDialog({
         zeroQty: 0,
         skipped,
         mergedRows,
-        noQty,
         noTitleLines,
         missing: [] as string[],
         shortfall: [] as { title: string; had: number; needed: number }[],
@@ -243,7 +240,6 @@ export default function ImportDialog({
       zeroQty,
       skipped,
       mergedRows,
-      noQty,
       noTitleLines,
       missing,
       shortfall,
@@ -486,7 +482,8 @@ export default function ImportDialog({
                   const p = plan[r];
                   const v = ROW_VERDICT[p?.status ?? "empty"];
                   const skip = v.kind === "skip";
-                  // 수량 칸이 비어 1권으로 처리되는 줄은 따로 표시합니다.
+                  // 수량 칸이 비면 1권으로 처리합니다. 선박 양식은 A열 TOTAL 이 늘 채워져
+                  // 있어 거의 없는 경우라, 경고 대신 조용한 표시만 답니다.
                   const qtyGuessed = v.kind === "book" && p?.item?.qty == null;
                   return (
                     <tr
@@ -506,8 +503,8 @@ export default function ImportDialog({
                         <span className="mr-1 text-[10px] text-gray-400">{r + 1}</span>
                         <span className={`text-[11px] font-semibold ${v.cls}`}>{v.label}</span>
                         {qtyGuessed && (
-                          <span className="ml-1 text-[10px] text-orange-600" title="수량 칸이 비어 1권으로 처리됩니다">
-                            수량?
+                          <span className="ml-1 text-[10px] text-gray-400" title="수량 칸이 비어 1권으로 처리됩니다">
+                            1권
                           </span>
                         )}
                       </td>
@@ -591,16 +588,7 @@ export default function ImportDialog({
             )}
           </div>
 
-          {/* ── 사람이 비워 둔 칸 안내 (조용히 지나가면 안 되는 것들) ── */}
-          {summary.noQty > 0 && (
-            <div className="mt-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs">
-              <b className="text-orange-800">수량 칸이 빈 줄이 {summary.noQty}개 있습니다 → 1권으로 처리합니다.</b>{" "}
-              <span className="text-gray-600">
-                엑셀에서 깜빡한 칸이면 지금 채우고 다시 붙여넣으세요. 미리보기의{" "}
-                <span className="font-semibold text-orange-600">수량?</span> 표시가 그 줄입니다.
-              </span>
-            </div>
-          )}
+          {/* ── 사람이 비워 둔 칸 안내 ── */}
           {summary.noTitleLines.length > 0 && (
             <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs">
               <b className="text-red-700">
