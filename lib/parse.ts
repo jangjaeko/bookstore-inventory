@@ -86,8 +86,21 @@ export const BUILTIN_PRESETS: Record<string, Preset> = {
     // 캐나다가격 │ (빈칸) │ Title │ Publisher │ Author │ Copies │ KRW │ Weight
     mapping: ["cad", "", "title", "publisher", "author", "qty", "krw", "weight"],
   },
+  bpl12: {
+    name: "BPL 인보이스 · 12열 (한글만)",
+    // ISBN │ Title. Kor │ Unit Price │ 15% Discount │ Net Price │ Copies │ Amount │
+    // Author. Kor │ Pub. Date │ Pub. City │ Publisher │ Subject
+    //
+    // 로마자 열이 없는 형태입니다. 10열 Pub.City(발행지)는 쓰지 않습니다
+    // — "경기도, 파주시" 가 도서명으로 잘못 들어가기 쉬운 자리입니다.
+    mapping: [
+      "isbn", "title", "cad", "", "", "qty", "",
+      "author", "pubDate", "", "publisher", "subject",
+    ],
+    direction: "out",
+  },
   bpl: {
-    name: "BPL 인보이스 (납품)",
+    name: "BPL 인보이스 · 17열 (로마자 포함)",
     // ISBN │ Title(로마자) │ Title. Kor │ Other Title │ Unit Price │ 15% Discount │
     // Net Price │ Author(로마자) │ Author. Kor │ Pub.City │ Pub.City. Kor │
     // Publisher(로마자) │ Publisher. Kor │ Pub. Date │ Subject │ Copies │ Amount
@@ -379,9 +392,18 @@ export function guessMapping(rows: string[][]): string[] {
   const money = stats.find((s) => !s.empty && !mapping[s.col] && s.money > 0.5);
   if (money) take(money.col, "cad");
 
-  // 도서명 = 남은 글자 열 중 가장 긴 것.
-  take(pickText((s) => s.medianLen), "title");
-  // 출판사 = 값이 가장 다양한 열. (도시 열은 "서울시"가 반복돼 다양성이 낮습니다.)
+  /**
+   * 도서명 = 길이 × 다양함².
+   *
+   * 길이만 보면 안 됩니다. 발행지 열의 "경기도, 파주시"(8자)가 책 제목보다 길어서
+   * 도서명 자리를 뺏어가고, 밀려난 제목 열이 출판사로 들어갑니다 (실제로 겪은 버그).
+   *
+   * 가르는 기준은 길이가 아니라 **값이 겹치느냐**입니다. 제목은 거의 모두 서로 다르고
+   * (다양함 ≈ 1), 도시·출판사는 같은 값이 반복됩니다(≈ 0.1~0.5).
+   * 제목이 두세 글자로 아주 짧은 경우까지 감당하려고 다양함을 제곱해 무게를 둡니다.
+   */
+  take(pickText((s) => s.medianLen * s.distinct * s.distinct), "title");
+  // 출판사 = 남은 글자 열 중 값이 가장 다양한 열. (도시 열은 반복이 많아 낮습니다.)
   take(pickText((s) => s.distinct), "publisher");
 
   // 숫자 열: 값이 크면 정가(₩), 중간이면 무게(g), 작으면 수량
