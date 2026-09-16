@@ -56,7 +56,7 @@ export type Preset = {
 export const BUILTIN_PRESETS: Record<string, Preset> = {
   auto: { name: "자동 감지", mapping: null },
   shipping: {
-    name: "선박 양식 · 16열 (A열 TOTAL 포함)",
+    name: "선박 · A열 TOTAL 부터 (16열)",
     // TOTAL │ ISBN │ 제목 │ Unit Price │ 15% DC │ After DC │ Copies │ Amount │
     // Author │ Pub.Date │ Place Of Publication │ Publisher │ Subject │ Copies │ KRW │ Gram
     //
@@ -69,13 +69,22 @@ export const BUILTIN_PRESETS: Record<string, Preset> = {
       "author", "pubDate", "", "publisher", "subject", "", "krw", "weight",
     ],
   },
-  shipping15: {
-    name: "선박 양식 · 15열 (ISBN부터)",
-    // 위 양식에서 맨 앞 TOTAL 열이 빠진 형태. Chrome 확장이 복사해 주는 그대로입니다.
+  shipping16r: {
+    name: "선박 · ISBN 부터, 회원리뷰 포함 (16열)",
+    // Chrome 확장(todays-books-helper)의 "Case 2 · 선박" 이 복사해 주는 현재 형태.
     // ISBN │ 제목 │ Unit Price │ 15% DC │ After DC │ Copies │ Amount │
-    // Author │ Pub.Date │ (빈칸) │ Publisher │ Subject │ TOTAL │ KRW │ Gram
+    // Author │ Pub.Date │ (빈칸) │ Publisher │ Subject │ TOTAL │ KRW │ Gram │ 회원리뷰
     //
-    // ★ 여기서도 수량은 TOTAL(13열)입니다. Copies(6열, 늘 1)가 아닙니다.
+    // ★ 수량은 TOTAL(13열)입니다. Copies(6열, 늘 1)가 아닙니다.
+    // 맨 뒤 회원리뷰는 책을 살지 말지 볼 때만 쓰는 값이라 재고에 저장하지 않습니다.
+    mapping: [
+      "isbn", "title", "cad", "", "", "", "",
+      "author", "pubDate", "", "publisher", "subject", "qty", "krw", "weight", "",
+    ],
+  },
+  shipping15: {
+    name: "선박 · ISBN 부터 (15열, 회원리뷰 이전)",
+    // 확장이 회원리뷰 열을 붙이기 전의 형태. 예전에 뽑아 둔 파일용입니다.
     mapping: [
       "isbn", "title", "cad", "", "", "", "",
       "author", "pubDate", "", "publisher", "subject", "qty", "krw", "weight",

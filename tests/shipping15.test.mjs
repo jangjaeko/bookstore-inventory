@@ -1,4 +1,5 @@
-// 앞의 TOTAL 열이 없는 15열 선박 양식 (Chrome 확장이 복사해 주는 형태).
+// 앞의 TOTAL 열이 없는 선박 양식 (ISBN 부터 시작).
+// 확장이 맨 뒤에 회원리뷰 열을 붙이기 전 15열과, 붙인 뒤 16열을 함께 검증합니다.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BUILTIN_PRESETS, buildPlan, guessMapping, splitRows } from "../lib/parse.ts";
@@ -64,4 +65,46 @@ test("16열 양식으로 15열을 읽으면 값이 밀린다 (경고가 필요�
   // ISBN 열이 수량으로, 제목 열이 ISBN 으로 밀립니다.
   assert.notEqual(first.isbn, "9791190896337");
   assert.equal(first.title, "$30.50");
+});
+
+// ── 확장이 회원리뷰 열을 붙인 뒤의 형태 (16열) ──
+test("회원리뷰가 붙은 16열도 같은 값을 읽어낸다", () => {
+  const withReview = ROWS.split("\n")
+    .map((l) => l + "\t" + Math.floor(Math.random() * 500))
+    .join("\n");
+  const rows = splitRows(withReview, "auto").rows;
+  assert.equal(Math.max(...rows.map((r) => r.length)), 16);
+
+  const plan = buildPlan(rows, BUILTIN_PRESETS.shipping16r.mapping, new Set());
+  const got = plan.filter((p) => p.status === "new").map((p) => p.item);
+  const [first] = got;
+  assert.equal(first.isbn, "9791190896337");
+  assert.equal(first.title, "우리 아기 알록달록 색깔 촉감책");
+  assert.equal(first.qty, 1);
+  assert.equal(first.krw, 13500);
+  assert.equal(first.weight, 324);
+  assert.equal(first.publisher, "어스본코리아");
+});
+
+test("회원리뷰 값은 어디에도 저장되지 않는다", () => {
+  const withReview = ROWS.split("\n").map((l) => l + "\t9999").join("\n");
+  const rows = splitRows(withReview, "auto").rows;
+  const got = buildPlan(rows, BUILTIN_PRESETS.shipping16r.mapping, new Set())
+    .filter((p) => p.status === "new")
+    .map((p) => p.item);
+  for (const it of got) {
+    for (const [field, v] of Object.entries(it)) {
+      assert.notEqual(String(v), "9999", `${field} 에 회원리뷰가 들어감`);
+    }
+  }
+  // 16열 양식의 마지막 칸은 "사용 안 함" 이어야 합니다.
+  assert.equal(BUILTIN_PRESETS.shipping16r.mapping.length, 16);
+  assert.equal(BUILTIN_PRESETS.shipping16r.mapping[15], "");
+});
+
+test("15열 양식과 16열 양식은 앞 15칸이 같다", () => {
+  assert.deepEqual(
+    BUILTIN_PRESETS.shipping16r.mapping.slice(0, 15),
+    BUILTIN_PRESETS.shipping15.mapping,
+  );
 });
