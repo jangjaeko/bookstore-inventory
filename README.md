@@ -1,300 +1,368 @@
-# 서점 재고 관리
+# Bookstore Inventory
 
-엑셀에서 행을 복사해 붙여넣으면 재고가 되는 웹앱입니다. 여러 대의 컴퓨터에서 같은 재고를 보도록
-Postgres(Neon)에 저장하고 Vercel에 배포합니다.
+A web app for tracking book stock at a Korean bookstore in Canada. Paste rows out of a
+spreadsheet and they become inventory; paste a library invoice and the same books come
+back out. Stock lives in Postgres so every machine in the shop sees the same numbers.
 
-> 형제 프로젝트: `../yes24-extractor` — YES24 상세페이지에서 서지정보를 뽑아 엑셀 양식으로 복사해주는
-> Chrome 확장. 이 앱과 **컬럼 순서(선박 / SALES / LBI)를 공유**하지만 저장소와 배포는 완전히 별개입니다.
+Deployed on Vercel behind a shared password. The URL is not published here because the
+instance holds a real shop's stock — happy to give it out on request.
 
-## 할 수 있는 것
+> Sibling project: [todays-books-helper](https://github.com/jangjaeko/todays-books-helper) —
+> a Chrome extension that pulls book data off YES24 and copies it in these same column
+> layouts. Separate repository, separate deploy, **shared column order**.
 
-- **엑셀 붙여넣기 입력** — 행을 복사해 붙여넣으면 열을 자동으로 알아보고 재고에 반영합니다.
-  선박(입고)·BPL·LBI 인보이스(출고) 양식은 기본 제공되며, 다른 양식은 열을 직접 지정한 뒤 이름을 붙여 저장해 둘 수 있습니다.
-  LBI 처럼 **한 권이 두 줄**인 양식도 지원합니다.
-- **입고와 출고** — 매입 문서는 재고를 늘리고, 납품·판매 인보이스는 재고를 줄입니다.
-  출고 시 재고에 없는 책과 재고보다 많이 나가는 책을 **반영 전에** 알려줍니다.
-- **중복 없는 누적** — 같은 책은 ISBN(없으면 도서명+저자)으로 알아보고 수량을 더합니다.
-  "수량 더하기 / 덮어쓰기 / 건너뛰기" 중에 고를 수 있습니다.
-- **수량 증감** — 표에서 ＋/− 버튼이나 숫자 직접 입력. 여러 권 선택 후 일괄 입고/출고도 됩니다.
-- **검색** — 도서명 · ISBN · 저자 · 출판사 · 분류 · 메모. `Ctrl+K` 로 검색창 이동.
-  **띄어쓰기를 무시**하므로 `우리아기` 로도 `우리 아기 알록달록 색깔 촉감책` 이 찾힙니다.
-  ISBN 은 하이픈이 있든 없든, 일부만 입력해도 찾힙니다.
-- **분류(Subject)로 보기** — `KOR FIC > GEN SS` 같은 값을 큰 분류(`KOR FIC`)로 묶어
-  드롭다운에서 고르면 그 분류의 책만 나옵니다. 표에도 분류 열이 있습니다.
-- **부족/품절 표시** — 기준 수량 이하는 주황, 0권은 빨강으로 강조 (기본 기준 0 = 품절만).
-- **입출고 이력** — 수량이 바뀔 때마다 언제 몇 권이 왜 바뀌었는지 남습니다.
-- **내보내기** — CSV, 그리고 선박 / SALES / LBI 양식으로 클립보드 복사 (엑셀에 바로 붙여넣기).
+## Why this exists
 
-## 처음 세팅
+The shop buys Korean books, ships them to Canada, and sells them — a good share to public
+library systems, which order by invoice. Stock was tracked in spreadsheets, which broke
+down in three ways:
 
-### 1. DB 만들기 (Neon)
+- **Nobody agreed on the current number.** Files lived on different machines and diverged.
+- **Every document has a different shape.** The shipping manifest, the SALES list, and each
+  library's invoice (BPL, LBI) all carry the same books in different column orders — some
+  with romanised and Korean columns side by side, one with a single book split across two
+  rows.
+- **Sales never made it back.** Books left the shelf on an invoice but the count stayed put,
+  so the sheet drifted further from reality every month.
 
-[console.neon.tech](https://console.neon.tech) 에서 프로젝트를 만들고 연결 문자열을 복사합니다.
-(무료 플랜으로 충분합니다.)
+This app keeps one authoritative count, accepts every one of those document shapes as
+paste-in, and handles both directions — purchases add, invoices subtract.
 
-### 2. 환경변수
+## What it does
+
+### Paste from any of the spreadsheets
+
+Copy rows out of Excel, paste, done. The app figures out which column is which, shows you
+a preview, and only writes when you confirm.
+
+- **Built-in layouts** for shipping manifests (three variants), SALES, BPL invoices (two
+  variants), and LBI invoices. Anything else: map the columns by hand once and save it
+  under a name.
+- **Junk rows drop out by themselves.** Section headings (`Teen FIC`, `MYS`), budget blocks,
+  `Subtotal` / `GST` / `Total Amount Due`, and blank rows all lack a title, which is the
+  test. Paste the whole sheet; no pre-cleaning.
+- **Two-row books** (LBI) are stitched back together, Korean title winning over romanised.
+- **Cells containing line breaks** survive. Excel wraps those in quotes and keeps the
+  newline; a quote-aware tokenizer reads it as one cell instead of splitting the book in two.
+
+Every row in the preview is labelled with what will happen to it — registered, updated,
+merged into the row above, or dropped and why.
+
+### In and out
+
+Purchase documents raise stock; invoices lower it. Before an outbound run lands you are
+told which books **aren't in stock at all** (usually a missed purchase entry) and which
+ones **would go negative**. Nothing goes below zero.
+
+### No duplicate entries
+
+Books are identified by ISBN — hyphens, stray spaces, Excel's quote wrapping, and trailing
+notes like `9788979197686/절판` all resolve to the same book. Without an ISBN it falls back
+to title + author. Re-pasting a file adds quantities to the existing rows rather than
+creating a second copy of everything.
+
+### Day-to-day
+
+- **Adjust counts** with ＋/− or by typing a number. Saves immediately; concurrent clicks
+  are handled atomically so rapid tapping never loses a click.
+- **Bulk actions** — select rows, then take stock in or out in one go, or copy them back
+  out in shipping / SALES / LBI layout.
+- **Search** across title, ISBN, author, publisher, subject, memo, and shelf location.
+  Whitespace-insensitive, so `우리아기` finds `우리 아기 알록달록 색깔 촉감책`. Partial
+  ISBNs work, with or without hyphens. `Ctrl+K` jumps to the box.
+- **Filter by subject.** `KOR FIC > GEN SS` collapses to `KOR FIC`, and the dropdown lists
+  each group with a count.
+- **Low stock / out of stock** highlighting, threshold configurable (default 0 = flag only
+  zero).
+- **Full movement history** per book: when, how many, which direction, and why.
+- **Export** to CSV, or copy selected rows in any of the spreadsheet layouts.
+
+## Getting set up
+
+### 1. Create the database
+
+Make a project at [console.neon.tech](https://console.neon.tech) and copy the connection
+string. The free tier is plenty — see [Capacity](#capacity) below.
+
+### 2. Environment variables
 
 ```bash
 cp .env.example .env.local
 ```
 
-`.env.local` 을 열어 세 값을 채웁니다.
-
-| 이름 | 설명 |
+| Name | What it is |
 |---|---|
-| `DATABASE_URL` | Neon 연결 문자열 |
-| `APP_PASSWORD` | 재고 페이지 접속용 공용 비밀번호 (직원들과 공유할 값) |
-| `AUTH_SECRET` | 쿠키 서명용 임의 문자열 |
+| `DATABASE_URL` | Neon connection string |
+| `APP_PASSWORD` | Shared password for the app — this is what staff type |
+| `AUTH_SECRET` | Random string used to sign the session cookie |
 
-`AUTH_SECRET` 생성:
+Generate `AUTH_SECRET` with:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-### 3. 테이블 만들기
+### 3. Create the tables
 
 ```bash
 npm install
-npm run db:push      # 스키마를 DB에 그대로 반영 (초기 세팅용)
+npm run db:push
 ```
 
-### 4. 실행
+### 4. Run it
 
 ```bash
 npm run dev          # http://localhost:3000
 ```
 
-## Vercel 배포
+## Deploying to Vercel
 
-1. 이 폴더를 GitHub 저장소로 올립니다.
-2. [vercel.com/new](https://vercel.com/new) 에서 그 저장소를 import 합니다.
-3. **Settings → Environment Variables** 에 `APP_PASSWORD` 와 `AUTH_SECRET` 을 넣습니다.
-4. **Storage → Create Database → Neon** 으로 DB를 연결하면 `DATABASE_URL` 이 자동으로 주입됩니다.
-   (이미 만든 Neon 프로젝트를 쓰려면 `DATABASE_URL` 을 환경변수로 직접 넣어도 됩니다.)
-5. 배포 후 한 번만 로컬에서 `npm run db:push` 를 프로덕션 `DATABASE_URL` 로 실행해 테이블을 만듭니다.
+1. Push this folder to a GitHub repository.
+2. Import it at [vercel.com/new](https://vercel.com/new). **Skip the optional
+   integrations** — connecting Neon there provisions a *second*, empty database and
+   overwrites `DATABASE_URL`.
+3. Under **Settings → Environment Variables**, add all three values from `.env.local`.
+4. Deploy. Tables already exist from step 3, so there is nothing else to run.
+5. Under **Settings → Deployment Protection**, turn **Vercel Authentication** off —
+   otherwise only the Vercel account owner can reach the site, and the app's own password
+   screen already guards it.
 
-이후에는 `git push` 하면 자동으로 다시 배포됩니다.
+After that, `git push` redeploys automatically.
 
-## 명령어
+Changing `APP_PASSWORD` later means editing it in Vercel **and redeploying**; environment
+variables are baked in at build time. Everyone gets logged out, because the session cookie
+is signed with the password. Leave `AUTH_SECRET` alone unless you want that on purpose.
 
-| 명령 | 하는 일 |
+## Commands
+
+| Command | What it does |
 |---|---|
-| `npm run dev` | 개발 서버 |
-| `npm run build` | 프로덕션 빌드 |
-| `npm test` | 엑셀 파서 테스트 (실제 선박 엑셀 데이터로 검증) |
-| `npm run db:push` | 스키마를 DB에 반영 |
-| `npm run db:generate` | 스키마 변경분을 SQL 마이그레이션으로 생성 |
-| `npm run db:studio` | 브라우저에서 DB 내용 확인 |
+| `npm run dev` | Development server |
+| `npm run build` | Production build |
+| `npm test` | Parser tests, using real spreadsheet and invoice data |
+| `npm run db:push` | Apply the schema to the database |
+| `npm run db:generate` | Generate a SQL migration from schema changes |
+| `npm run db:studio` | Browse the database |
 
-## 구조
+## Layout
 
 ```
 app/
-├── page.tsx                재고 화면 (InventoryApp 을 띄우기만 함)
-├── login/page.tsx          비밀번호 입력 화면
+├── page.tsx                inventory screen (just mounts InventoryApp)
+├── login/page.tsx          password screen
 ├── components/
-│   ├── InventoryApp.tsx    목록 · 검색 · 수량 증감 · 일괄 처리
-│   ├── ImportDialog.tsx    엑셀 붙여넣기 → 열 지정 → 미리보기 → 반영
-│   ├── EditDialog.tsx      직접 추가 / 수정
-│   ├── LogDialog.tsx       입출고 이력
-│   └── ui.tsx              버튼 · 모달 · 입력
+│   ├── InventoryApp.tsx    list · search · filters · quantity · bulk actions
+│   ├── ImportDialog.tsx    paste → column mapping → preview → apply
+│   ├── EditDialog.tsx      add / edit one book
+│   ├── LogDialog.tsx       movement history
+│   └── ui.tsx              button · modal · field
 └── api/
-    ├── books/              목록·검색·추가·일괄처리 (+ [id] 수정/삭제, /match, /[id]/logs)
-    ├── import/             엑셀 일괄 반영 (UPSERT)
-    ├── presets/            사용자 저장 양식
+    ├── books/              list, search, add, bulk (+ [id] edit/delete, /match, /[id]/logs)
+    ├── import/             bulk apply (UPSERT in, decrement out)
+    ├── presets/            user-saved column mappings
     └── login, logout
 
 lib/
 ├── schema.ts               books / stock_logs / import_presets
-├── db.ts                   Drizzle + Neon (지연 초기화)
-├── parse.ts                엑셀 파싱 · 열 자동 감지 · 중복 판정  ← 핵심
-├── format.ts               선박/SALES/LBI 양식, CSV
-├── auth.ts                 공용 비밀번호 + HMAC 쿠키
-└── api.ts                  라우트 공통 헬퍼
+├── db.ts                   Drizzle + Neon (lazily initialised)
+├── parse.ts                tokenizer · column detection · book identity   ← the core
+├── format.ts               spreadsheet layouts, CSV, subject grouping
+├── auth.ts                 shared password + HMAC cookie
+└── api.ts                  shared route helpers
 
-middleware.ts               로그인 안 했으면 /login 으로 (API 는 401)
-tests/parse.test.mjs        파서 검증
+middleware.ts               redirects to /login (APIs answer 401)
+tests/                      parser tests against real data
 ```
 
-## 알아둘 점
+---
 
-### 같은 책 판정 (`matchKey`)
+## How it works
 
-`books.match_key` 컬럼이 UNIQUE 이고, 엑셀 반영은 이 컬럼 기준 UPSERT 입니다.
+### Book identity (`matchKey`)
 
-- ISBN 이 있으면 → `i:9791130681887` (하이픈·공백 무시)
-- 없으면 → `t:도서명|저자` (공백 제거, 소문자)
+`books.match_key` is UNIQUE and every import is an UPSERT against it.
 
-선박 엑셀에서 ISBN 자리에 `판매용` 같은 값이 들어오면 그 문자열은 그대로 보존하되,
-식별은 도서명+저자로 합니다.
+- With an ISBN → `i:9791130681887` (digits only; hyphens, spaces, and trailing notes ignored)
+- Without one → `t:title|author` (whitespace stripped, lowercased)
 
-### 기본 제공 양식
+So `979-11-3068-188-7`, `"    9791130681887"`, and `9788979197686/절판` all land on the
+right book. The original text is kept as typed; only matching is normalised.
 
-| 양식 | 열 | 방향 | 비고 |
+When the ISBN column holds something like `판매용` instead of a number, the string is
+preserved but identity falls back to title + author.
+
+### Built-in layouts
+
+| Layout | Cols | Direction | Notes |
 |---|---|---|---|
-| 자동 감지 | — | 입고 | 열을 스스로 알아냅니다. 어떤 걸 골라야 할지 모르겠으면 이것부터 |
-| 선박 · A열 TOTAL 부터 | 16 | 입고 | 엑셀 A열이 `TOTAL` 인 형태 (VPL 주문 엑셀) |
-| 선박 · ISBN 부터, 회원리뷰 포함 | 16 | 입고 | **Chrome 확장이 지금 복사해 주는 형태** |
-| 선박 · ISBN 부터 | 15 | 입고 | 확장이 회원리뷰 열을 붙이기 전에 뽑아 둔 파일용 |
-| SALES 양식 | 8 | 입고 | 확장의 Case 1 |
-| BPL 인보이스 · 12열 | 12 | **출고** | 로마자 열이 없는 형태 |
-| BPL 인보이스 · 17열 | 17 | **출고** | 로마자/한글 열이 쌍으로 있는 형태 |
-| LBI 인보이스 | 10 | **출고** | 한 권이 **두 줄** |
+| Auto-detect | — | in | Works out the columns itself. Start here if unsure |
+| Shipping · from TOTAL | 16 | in | Column A is `TOTAL` (the VPL order sheet) |
+| Shipping · from ISBN, with reviews | 16 | in | **What the Chrome extension copies today** |
+| Shipping · from ISBN | 15 | in | For files exported before the review column existed |
+| SALES | 8 | in | Extension's Case 1 |
+| BPL invoice · 12 col | 12 | **out** | Korean columns only |
+| BPL invoice · 17 col | 17 | **out** | Romanised and Korean columns paired |
+| LBI invoice | 10 | **out** | One book spans **two rows** |
 
-**16열짜리가 둘이라 이름을 잘 보세요.** `A열 TOTAL 부터` 는 맨 앞이 수량,
-`ISBN 부터, 회원리뷰 포함` 은 맨 앞이 ISBN 입니다. 잘못 고르면 값이 통째로 한 칸씩 밀립니다.
+**Two layouts are 16 columns wide — read the names.** `from TOTAL` starts with quantity,
+`from ISBN, with reviews` starts with ISBN. Pick the wrong one and every value shifts by a
+column. A width mismatch triggers an orange warning, but these two have the same width, so
+glance at the preview's column headers.
 
-양식의 열 수와 붙여넣은 열 수가 다르면 주황색 경고가 뜹니다. 그게 보이면 다른 양식을
-고르거나 자동 감지를 쓰세요. 미리보기 표의 열 지정이 맞는지도 한 번 훑어보시면 확실합니다.
+### Quantity comes from `TOTAL`, not `Copies`
 
-### 회원리뷰 열은 읽고 버립니다
+Shipping sheets have up to three columns that look like a quantity:
 
-확장의 선박 양식 맨 끝에 회원리뷰 건수가 붙지만, 재고에는 저장하지 않습니다
-(살지 말지 정할 때만 보는 값이라 재고 관리에 쓸 일이 없습니다).
-`shipping16r` 양식의 16번째 칸이 `""`(사용 안 함)인 이유입니다.
+| Column | What it is |
+|---|---|
+| **`TOTAL`** | **The real stock count. This is the only one used.** |
+| `Copies` (7th) | Padding kept so the row can be pasted into library order forms later |
+| `Copies` (14th) | Same |
 
-### 분류(Subject)를 묶는 규칙
+They disagree on purpose — `바깥은 여름` is TOTAL 2 / Copies 3 and imports as **2**. Empty
+`Copies` cells are fine. Locked down in `tests/vpl.test.mjs` so it does not get "fixed".
 
-Subject 는 `KOR FIC > GEN SS` 처럼 여러 단계인데, 보기 기준으로는 첫 조각만 씁니다.
+### The review column is read and discarded
 
-| 원래 값 | 큰 분류 |
+The extension appends a member-review count to the shipping layout. It is useful when
+deciding whether to buy a title, and useless afterwards, so it is not stored — hence the
+empty 16th slot in the `shipping16r` mapping.
+
+### Updating existing books
+
+Picked from **`Update with new values`** in the paste dialog. In every mode only non-empty
+incoming values overwrite, so blank invoice cells never erase what you have.
+
+| Choice | Overwrites |
+|---|---|
+| **Everything** | title, author, publisher + price, subject, pub date, weight |
+| **Price / subject / date only** | price (CAD + KRW), subject, pub date, weight. **Title, author, publisher untouched** |
+| **Nothing** | quantity only |
+
+Inbound defaults to *everything*; outbound defaults to *price / subject / date only*.
+Invoice title columns sometimes carry romanised text or notes like
+`Qty. increased upon request`, so outbound refreshes the numbers and the subject — which
+are more accurate on the invoice than on the purchase sheet — while leaving the Korean
+bibliographic data alone.
+
+### Subject grouping
+
+Subjects are multi-level; the filter uses the first segment.
+
+| Raw value | Group |
 |---|---|
 | `KOR FIC > GEN SS` | `KOR FIC` |
-| `FIC - GEN SS` | `FIC` (띄어쓴 하이픈도 구분자) |
-| `Self-Help > Success` | `Self-Help` (붙은 하이픈은 단어의 일부) |
-| `KOR Essays` | `KOR Essays` (구분자 없으면 통째로) |
+| `FIC - GEN SS` | `FIC` (spaced hyphen also separates) |
+| `Self-Help > Success` | `Self-Help` (tight hyphen is part of the word) |
+| `KOR Essays` | `KOR Essays` (no separator → whole string) |
 | `KOR > Learning English > Writing` | `KOR > Learning English` |
 | `국내도서 > 어린이 > 1-2학년 > …` | `국내도서 > 어린이` |
 
-마지막 둘이 예외입니다. `KOR` 과 `국내도서` 는 절반 이상의 책에 붙어 있어 걸러내는
-의미가 없으므로 한 단계 더 들어갑니다 (`lib/format.ts` 의 `BROAD_ROOTS`).
+The last two are the exception: `KOR` and `국내도서` sit on more than half the catalogue, so
+grouping by them filters nothing — those go one level deeper (`BROAD_ROOTS` in
+`lib/format.ts`).
 
-거를 때는 단순 접두어가 아니라 **구분자까지 붙여** 비교합니다.
-그래야 `FIC` 가 `FICTION` 이나 `KOR FIC` 을 잡지 않습니다.
+Filtering compares **including the separator**, so `FIC` does not sweep in `FICTION` or
+`KOR FIC`.
 
-### 이미 있는 책에 새 정보가 들어올 때
+### BPL invoices (outbound)
 
-붙여넣기 화면의 **`새 값으로 갱신`** 에서 고릅니다. 어느 쪽이든 **비어 있지 않은 값만**
-덮어쓰므로, 인보이스에 없는 칸이 기존 값을 지우지 않습니다.
+Library delivery invoices are books that left the shelf, so they go in as outbound. Two
+shapes exist:
 
-| 선택 | 바뀌는 것 |
-|---|---|
-| **전부** | 제목·저자·출판사 + 가격·분류·출간일·무게 |
-| **가격·분류·출간일만** | 가격(CAD·정가)·분류·출간일·무게. **제목·저자·출판사는 그대로** |
-| **갱신 안 함** | 수량만 |
-
-입고(선박)는 **전부**, 출고(납품 인보이스)는 **가격·분류·출간일만** 이 기본값입니다.
-납품 인보이스의 제목 칸에는 로마자 표기나 `Qty. increased upon request` 같은 메모가
-들어 있기도 해서, 가격·분류는 최신으로 맞추되 한글 서지정보는 지키기 위해서입니다.
-
-### 수량은 `TOTAL` 열입니다 (`Copies` 아님)
-
-선박 엑셀에는 수량처럼 보이는 열이 셋 있습니다:
-
-| 열 | 정체 |
-|---|---|
-| **`TOTAL` (A열)** | **진짜 재고 수량. 이것만 씁니다.** |
-| `Copies` (7열) | 도서관 납품 양식에 붙여넣기 편하려고 만들어 둔 칸 |
-| `Copies` (14열) | 위와 같음 |
-
-`Copies` 는 재고와 무관하고 `TOTAL` 과 값이 다를 수 있습니다
-(예: `바깥은 여름` 은 TOTAL 2 / Copies 3 → **2권**으로 들어갑니다).
-비어 있어도 상관없습니다. 이 규칙은 `tests/vpl.test.mjs` 에 못 박혀 있습니다.
-
-### 선박 양식 열 순서
-
-엑셀 A열이 `TOTAL`, B열부터가 Chrome 확장이 복사해주는 값입니다.
-
+**12 columns** — Korean only:
 ```
-TOTAL │ ISBN │ 제목 │ Unit Price │ 15% DC │ After DC │ Copies │ Amount │
-Author │ Pub.Date │ (빈칸) │ Publisher │ Subject │ TOTAL │ KRW │ Weight
+ISBN │ Title. Kor │ Unit Price │ 15% Discount │ Net Price │ Copies │ Amount │
+Author. Kor │ Pub. Date │ Pub. City │ Publisher │ Subject
 ```
 
-수량은 `Copies`(항상 1)가 아니라 **`TOTAL`(1열)** 에서 가져옵니다.
-
-### BPL 인보이스 (출고)
-
-도서관 납품 인보이스는 **팔린 책 = 재고에서 빠진 책**이므로 출고로 넣습니다. 17열이고 선박 양식과 다릅니다.
-
+**17 columns** — romanised and Korean paired:
 ```
-ISBN │ Title(로마자) │ Title. Kor │ Other Title │ Unit Price │ 15% Discount │ Net Price │
-Author(로마자) │ Author. Kor │ Pub.City │ Pub.City. Kor │ Publisher(로마자) │ Publisher. Kor │
+ISBN │ Title │ Title. Kor │ Other Title │ Unit Price │ 15% Discount │ Net Price │
+Author │ Author. Kor │ Pub.City │ Pub.City. Kor │ Publisher │ Publisher. Kor │
 Pub. Date │ Subject │ Copies │ Amount
 ```
 
-- 로마자 열이 아니라 **한글 열**(`Title. Kor` 등)을 씁니다. 재고는 YES24 기준 한글로 쌓여 있어서 그래야 같은 책으로 이어집니다.
-- `Teen FIC`·`MYS` 같은 구역 제목, 예산·`Subtotal`·`GST`·`Total Amount Due` 행은
-  **도서명 열이 비어 있어 자동으로 걸러집니다.** 미리 지울 필요 없이 통째로 붙여넣으면 됩니다.
-- `Copies 0` 인 줄(주문했지만 나가지 않음)은 아무 일도 하지 않습니다.
-- 출고에서는 **"서지정보도 갱신"을 꺼 두세요.** 인보이스에는 한글 제목 자리에
-  `Qty. increased upon request` 같은 메모가 들어 있기도 해서 재고의 정보가 덮어써질 수 있습니다.
-  (BPL 양식을 고르면 자동으로 꺼집니다.)
+Both map the **Korean** columns, because stock is held in Korean (sourced from YES24) and
+that is what has to match. `Pub. City` is deliberately unmapped — see the next section for
+why it is dangerous.
 
-### LBI 인보이스 (출고, 한 권이 두 줄)
+Rows with `Copies 0` (ordered but not shipped) change nothing.
 
-LBI 는 **한 권이 두 줄**입니다. 10열이고 BPL 과도 다릅니다.
+### LBI invoices (outbound, two rows per book)
 
 ```
 NO │ ISBN │ Title │ Unit Price │ 15% Discount │ Net Price │ Copies │ Amount │ Author │ Pub. Date
  1 │ 9791168343641 │ Bulgeun kal │ $41.50 │ ($6.23) │ $35.27 │ 1 │ $35.27 │ Jeong, Bora │ 202603
-   │               │ 붉은 칼 (개정판) │ … │ … │ … │ … │ … │ 정보라   │
+   │               │ 붉은 칼 (개정판) │ … │ … │ … │ … │ … │ 정보라 │
 ```
 
-- 윗줄에 ISBN·로마자 제목·금액, **아랫줄에 한글 제목·저자**가 옵니다.
-- `두 줄이 한 권` 옵션을 켜면 (LBI 양식을 고르면 자동) 두 줄을 한 권으로 합칩니다.
-  합칠 때 **아랫줄이 이기므로** 결국 한글 제목·저자가 남습니다.
-- 합쳐진 줄은 미리보기에서 파란 배경으로 표시됩니다 (버려진 회색 취소선과 구분).
+ISBN, romanised title, and money are on the first row; **Korean title and author on the
+second**. The `Two rows per book` option (automatic with the LBI layout) merges them, with
+the lower row winning — so the Korean title survives. Merged rows show with a blue
+background in the preview.
 
-**이 옵션을 안 켜면 한 권이 두 권으로 갈라집니다.** 아랫줄은 ISBN 이 없어서
-도서명+저자로 식별되고, 재고의 책과 이어지지 않아 "재고에 없음"으로 잔뜩 뜹니다.
-그게 보이면 옵션을 켰는지 확인하세요.
+**Without that option one book becomes two.** The second row has no ISBN, so it identifies
+by title + author, matches nothing in stock, and floods the preview with "not in stock".
+That is the symptom to watch for.
 
-#### 이어지는 줄을 어떻게 알아보나
+A row is treated as a continuation only when it **has no ISBN, has a title, and follows an
+open book**. Requiring a title is what keeps budget and total rows (`19C`, `($643.39)`,
+`Budget Left`) from being absorbed into the book above them.
 
-`ISBN 이 없고 + 도서명이 있고 + 위에 열린 도서가 있을 때`만 합칩니다.
-도서명을 요구하는 게 핵심입니다 — 예산·합계 줄(`19C`, `($643.39)`, `Budget Left`)은
-도서명 열이 비어 있어서 앞 도서에 잘못 붙지 않습니다.
-`ADULT FICTION` 같은 구역 제목은 ISBN 열에 들어오지만 유효한 ISBN 이 아니고
-도서명도 없어서 그냥 버려집니다.
+### Column auto-detection
 
-### 출고는 되돌릴 수 없습니다
+Each column is scored on what its values look like. Two decisions are less obvious than
+they sound:
 
-같은 인보이스를 두 번 붙여넣으면 **두 번 차감됩니다.** 입고는 ISBN 기준 UPSERT 라 중복이 안 생기지만
-출고는 "이 인보이스를 이미 처리했는지"를 아직 기억하지 않습니다.
-반영 전 미리보기 숫자를 확인하고, 실수했으면 이력 화면을 보고 수동으로 되돌려야 합니다.
+**Median, not mean.** A single `Subtotal 414` row at the bottom of an invoice drags the
+average enough to make a quantity column look like a weight column. The median ignores it.
 
-### 붙여넣기는 탭으로
+**Title = length × uniqueness².** Length alone is not enough: `경기도, 파주시` in a
+publication-city column is longer than most Korean book titles, so it wins the title slot
+and pushes the real title into publisher. Titles are nearly all distinct (≈1.0) while
+cities repeat (≈0.07), so weighting uniqueness separates them even when titles are two or
+three characters long.
 
-엑셀에서 복사하면 셀 구분이 탭이라 빈 열까지 정확히 살아납니다.
-채팅이나 메모장을 거치면 탭이 공백으로 바뀌어 **빈 열이 사라집니다** —
-그럴 땐 붙여넣기 화면의 열 지정 표에서 직접 맞춰 주세요.
+Text columns containing Hangul are preferred when both romanised and Korean columns exist.
 
-### 셀 안에 줄바꿈이 있어도 됩니다
+### Paste with tabs
 
-엑셀에서 셀 안에 줄바꿈(`Alt+Enter`)이 있으면 그 셀을 큰따옴표로 감싸고
-**줄바꿈을 그대로** 내보냅니다:
+Copying from Excel gives tab-separated text, which preserves empty columns exactly. Going
+through a chat window or notepad converts tabs to spaces and **empty columns disappear** —
+then you have to fix the mapping by hand.
 
-```
-1 <TAB> 9791193153710 <TAB> "
-너를 아끼며 살아라 " <TAB> … <TAB> 더블북
-```
+Cell-internal line breaks are fine: Excel quotes those cells and keeps the newline, and
+`splitRows()` uses a quote-aware tokenizer rather than splitting on `\n`. Inside quotes,
+newlines and delimiters are literal text; `""` unescapes to one quote. Cell values get
+internal whitespace collapsed to single spaces.
 
-`splitRows()` 는 줄 단위로 자르지 않고 따옴표를 아는 토크나이저(`tokenize()`)를 씁니다.
-따옴표 안에서는 줄바꿈과 구분자를 글자로 취급하고, 셀 값의 안쪽 줄바꿈·연속 공백은
-한 칸으로 모읍니다. `""` 는 따옴표 한 글자로 풉니다.
+### Outbound is not reversible
 
-줄 단위로 자르면 한 권이 두 줄로 쪼개져 앞줄은 "도서명 없음"으로 버려지고
-뒷줄은 ISBN 없이 제목만 남아 재고와 이어지지 않습니다.
+Pasting the same invoice twice subtracts twice. Inbound is an ISBN-keyed UPSERT so it
+cannot duplicate, but outbound does not yet remember which invoices it has already seen.
+Check the preview counts before applying; if it goes wrong, use the history screen to work
+out what to put back.
 
-### ISBN 에 메모가 붙어 있어도 됩니다
+## Capacity
 
-`9788979197686/절판` 처럼 ISBN 뒤에 메모가 붙어도, 원문은 그대로 보존하면서
-**숫자만 뽑아 같은 책으로 식별**합니다 (`matchKey = i:9788979197686`).
+Measured with 50,000 rows of realistic Korean bibliographic data:
 
-### 열 자동 감지는 중앙값을 씁니다
+| | |
+|---|---|
+| One book | ~86 bytes including indexes |
+| One movement record | ~100 bytes |
+| Neon free tier (0.5 GB) | roughly **6 million books** |
+| 20,000 books + 200,000 movements | 38 MB — 7.5% of the free tier |
 
-인보이스 맨 아래 `Subtotal 414` 같은 합계 행이 한 줄만 섞여도 평균은 크게 흔들려서
-수량 열을 무게 열로 오인합니다. 그래서 대푯값은 평균이 아니라 중앙값입니다.
-글자 열은 **한글이 든 열을 우선**하고, 출판사는 값이 가장 다양한 열을 고릅니다
-(`서울시`가 반복되는 도시 열과 구분하기 위해).
+Storage is not the constraint. **Compute is**: the free tier allows 100 CU-hours per month,
+and the database sleeps after five minutes idle. A few staff using it on and off through
+the day lands well inside that. Exceeding any free limit suspends the database until the
+next billing month, so keep an eye on the Neon dashboard and move to the paid tier if usage
+climbs.
+
+Don't put cover images in Postgres. Use object storage and keep a URL.
+
+## License
+
+MIT
